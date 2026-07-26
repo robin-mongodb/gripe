@@ -1,0 +1,154 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Gripe — Tasks</title>
+<style>
+  :root { color-scheme: light dark; --b:#8884; --hi:#3b82f622; }
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 2rem; max-width: 1100px; }
+  h1 { margin: 0 0 .25rem; }
+  .meta { color: #888; margin-bottom: 1rem; }
+  .controls { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+  input, select { padding: .4rem .6rem; border: 1px solid var(--b); border-radius: 6px; background: transparent; color: inherit; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { border-bottom: 1px solid var(--b); padding: .5rem .6rem; text-align: left; vertical-align: top; }
+  th { cursor: pointer; user-select: none; position: sticky; top: 0; background: canvas; }
+  th::after { content: ""; margin-left: .3rem; opacity: .5; }
+  th.asc::after { content: "▲"; }
+  th.desc::after { content: "▼"; }
+  tr.done td:not(.status) { text-decoration: line-through; opacity: .55; }
+  tr:hover { background: var(--hi); }
+  .pill { display: inline-block; padding: .1rem .5rem; border-radius: 999px; border: 1px solid var(--b); font-size: .8em; }
+  .status { cursor: pointer; }
+  .status[data-v="done"] { color: #16a34a; }
+  .status[data-v="doing"] { color: #ca8a04; }
+  .status[data-v="todo"] { color: #6b7280; }
+  .counts { margin-left: auto; color: #888; }
+  #empty { padding: 2rem; text-align: center; color: #888; display: none; }
+</style>
+
+<h1>Gripe — Tasks</h1>
+<div class="meta">Two-week SA challenge. Click status to cycle todo → doing → done. Click headers to sort. State persists in localStorage.</div>
+
+<div class="controls">
+  <input id="q" placeholder="filter…" autofocus>
+  <select id="phase"><option value="">all phases</option></select>
+  <select id="backend"><option value="">all backends</option></select>
+  <select id="status">
+    <option value="">all statuses</option>
+    <option value="todo">todo</option>
+    <option value="doing">doing</option>
+    <option value="done">done</option>
+  </select>
+  <span class="counts" id="counts"></span>
+</div>
+
+<table>
+  <thead><tr>
+    <th data-k="id">#</th>
+    <th data-k="phase">Phase</th>
+    <th data-k="title">Task</th>
+    <th data-k="backend">Backend</th>
+    <th data-k="status">Status</th>
+  </tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+<div id="empty">No tasks match.</div>
+
+<script>
+const LS = "gripe.tasks.status.v1";
+const STATUSES = ["todo", "doing", "done"];
+let rows = [], sortK = "id", sortDir = 1;
+
+function parseCSV(text) {
+  const [head, ...lines] = text.trim().split("\n");
+  const cols = head.split(",");
+  return lines.map(l => Object.fromEntries(l.split(",").map((v, i) => [cols[i], v])));
+}
+
+function save() {
+  const map = Object.fromEntries(rows.map(r => [r.id, r.status]));
+  localStorage.setItem(LS, JSON.stringify(map));
+}
+function load() {
+  const map = JSON.parse(localStorage.getItem(LS) || "{}");
+  rows.forEach(r => { if (map[r.id]) r.status = map[r.id]; });
+}
+
+function fillSelect(sel, values) {
+  [...new Set(values)].sort().forEach(v => {
+    const o = document.createElement("option");
+    o.value = o.textContent = v;
+    sel.appendChild(o);
+  });
+}
+
+function render() {
+  const q = document.getElementById("q").value.toLowerCase();
+  const fp = document.getElementById("phase").value;
+  const fb = document.getElementById("backend").value;
+  const fs = document.getElementById("status").value;
+  const tbody = document.getElementById("rows");
+  tbody.innerHTML = "";
+
+  const filtered = rows
+    .filter(r => !fp || r.phase === fp)
+    .filter(r => !fb || r.backend === fb)
+    .filter(r => !fs || r.status === fs)
+    .filter(r => !q || Object.values(r).join(" ").toLowerCase().includes(q))
+    .sort((a, b) => {
+      const av = sortK === "id" ? +a[sortK] : a[sortK];
+      const bv = sortK === "id" ? +b[sortK] : b[sortK];
+      return av > bv ? sortDir : av < bv ? -sortDir : 0;
+    });
+
+  document.getElementById("empty").style.display = filtered.length ? "none" : "block";
+  const done = rows.filter(r => r.status === "done").length;
+  document.getElementById("counts").textContent = `${filtered.length} shown · ${done}/${rows.length} done`;
+
+  for (const r of filtered) {
+    const tr = document.createElement("tr");
+    if (r.status === "done") tr.classList.add("done");
+    tr.innerHTML = `
+      <td>${r.id}</td>
+      <td><span class="pill">${r.phase}</span></td>
+      <td>${r.title}</td>
+      <td><span class="pill">${r.backend}</span></td>
+      <td class="status" data-id="${r.id}" data-v="${r.status}">● ${r.status}</td>`;
+    tbody.appendChild(tr);
+  }
+
+  document.querySelectorAll("th").forEach(th => {
+    th.classList.remove("asc", "desc");
+    if (th.dataset.k === sortK) th.classList.add(sortDir === 1 ? "asc" : "desc");
+  });
+}
+
+async function main() {
+  const text = await (await fetch("tasks.csv")).text();
+  rows = parseCSV(text);
+  load();
+  fillSelect(document.getElementById("phase"), rows.map(r => r.phase));
+  fillSelect(document.getElementById("backend"), rows.map(r => r.backend));
+  render();
+}
+
+document.addEventListener("input", e => { if (e.target.matches("#q, select")) render(); });
+document.addEventListener("click", e => {
+  const th = e.target.closest("th[data-k]");
+  if (th) {
+    if (sortK === th.dataset.k) sortDir *= -1; else { sortK = th.dataset.k; sortDir = 1; }
+    render();
+  }
+  const s = e.target.closest(".status");
+  if (s) {
+    const r = rows.find(r => r.id === s.dataset.id);
+    r.status = STATUSES[(STATUSES.indexOf(r.status) + 1) % STATUSES.length];
+    save();
+    render();
+  }
+});
+
+main().catch(err => {
+  document.body.insertAdjacentHTML("beforeend",
+    `<p style="color:#c00">Failed to load tasks.csv — serve this over http (e.g. <code>python3 -m http.server</code>), not file://.<br>${err}</p>`);
+});
+</script>

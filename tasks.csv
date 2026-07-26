@@ -1,0 +1,36 @@
+id,phase,title,backend,status
+1,Skeleton,Init repo + docker-compose (web/api/worker/postgres),both,todo
+2,Skeleton,Next.js App Router shell + Tailwind,common,todo
+3,Skeleton,Define use-case-shaped Store interface (SearchPayments/FindSimilarPayments/GetPaymentTimeline/SubscribeToPaymentEvents),common,todo
+4,Skeleton,Go HTTP service scaffold + config flag to pick backend,common,todo
+5,Skeleton,Thin slice: create + list payment against Mongo,mongo,todo
+6,Skeleton,Domain DTOs + validation,common,todo
+7,Skeleton,Seed generator wired to Store interface,common,todo
+8,Mongo build,Mongo schema (collections + documents),mongo,todo
+9,Mongo build,Compound + text + vector indexes,mongo,todo
+10,Mongo build,Control Centre UI: search + list + detail,common,todo
+11,Mongo build,Atlas Search fuzzy search implementation,mongo,todo
+12,Mongo build,Voyage embeddings pipeline for payments,common,todo
+13,Mongo build,Atlas Vector Search for FindSimilarPayments,mongo,todo
+14,Mongo build,Change Streams -> SubscribeToPaymentEvents,mongo,todo
+15,Mongo build,Live event feed sidebar (SSE/WebSocket to frontend),common,todo
+16,Mongo build,Fraud worker: agentic LLM with context retrieval,common,todo
+17,Mongo build,AI chat panel over payments history,common,todo
+18,Mongo build,Contract tests via testcontainers (Mongo green),common,todo
+19,Postgres port,PG schema + migrations (goose or golang-migrate),postgres,todo
+20,Postgres port,pg_trgm + tsvector search implementation,postgres,todo
+21,Postgres port,pgvector (HNSW) for FindSimilarPayments,postgres,todo
+22,Postgres port,LISTEN/NOTIFY -> SubscribeToPaymentEvents,postgres,todo
+23,Postgres port,Aggregations via SQL/CTE for timeline,postgres,todo
+24,Postgres port,Contract tests green against PG,common,todo
+25,Perf,Pick HTTP load tool (k6/locust/vegeta),common,todo
+26,Perf,Perf harness: key chain (search -> detail -> similar -> chat),common,todo
+27,Perf,Decide seed data volume + run seed on demo box,common,todo
+28,Perf,Run scenarios against Mongo; capture p50/p95/p99,mongo,todo
+29,Perf,Run scenarios against PG; capture p50/p95/p99,postgres,todo
+30,Perf,Tune indexes/queries on M50-equivalent,both,todo
+31,Perf,Comparison report with graphs,common,todo
+32,Buffer + demo,nginx routing / -> web + /v1/* -> api,common,todo
+33,Buffer + demo,README with run instructions + feature callouts,common,todo
+34,Buffer + demo,Demo script walking the 7 verification steps,common,todo
+35,Buffer + demo,Note: was one DB easier to build with Claude?,common,todo

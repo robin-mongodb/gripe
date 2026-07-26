@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>AwesomePayments — Approach (Locked)</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #161a22;
+    --panel-2: #1c212c;
+    --border: #2a3140;
+    --text: #e6e8ee;
+    --muted: #9aa3b2;
+    --accent: #7cc4ff;
+    --accent-2: #86e1a5;
+    --warn: #ffcf7a;
+    --code-bg: #0b0d12;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #fbfbfd;
+      --panel: #ffffff;
+      --panel-2: #f5f6f9;
+      --border: #e3e6ee;
+      --text: #1a1d24;
+      --muted: #5b6472;
+      --accent: #1f6feb;
+      --accent-2: #1a7f4b;
+      --warn: #8a5a00;
+      --code-bg: #f2f4f8;
+    }
+  }
+  html, body { background: var(--bg); color: var(--text); }
+  body {
+    margin: 0;
+    font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  main { max-width: 900px; margin: 0 auto; padding: 40px 24px 96px; }
+  h1 { font-size: 28px; letter-spacing: -0.01em; margin: 0 0 4px; }
+  h2 {
+    font-size: 20px;
+    margin: 40px 0 10px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+    letter-spacing: -0.005em;
+  }
+  h3 { font-size: 16px; margin: 20px 0 6px; color: var(--text); }
+  p { margin: 8px 0; }
+  .sub { color: var(--muted); font-size: 14px; margin-top: 0; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin: 14px 0;
+  }
+  .card.accent { border-left: 3px solid var(--accent); }
+  .card.good   { border-left: 3px solid var(--accent-2); }
+  .card.warn   { border-left: 3px solid var(--warn); }
+  code, kbd {
+    font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 6px;
+  }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0 4px; font-size: 14px; }
+  th, td {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  th { background: var(--panel-2); font-weight: 600; }
+  tr:last-child td { border-bottom: none; }
+  ul { padding-left: 20px; margin: 6px 0; }
+  li { margin: 3px 0; }
+  .tag {
+    display: inline-block;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    margin-right: 6px;
+  }
+  .tag.locked  { color: var(--accent-2); border-color: var(--accent-2); }
+  .tag.defer   { color: var(--warn); border-color: var(--warn); }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 720px) { .grid-2 { grid-template-columns: 1fr; } }
+  hr { border: 0; border-top: 1px solid var(--border); margin: 24px 0; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>AwesomePayments — Approach (Locked)</h1>
+<p class="sub">Modules 3 &amp; 4. Two weeks. Mongo + Postgres. Decisions closed; day-by-day roadmap is next.</p>
+
+<div class="card accent">
+  <h3 style="margin-top:0">TL;DR</h3>
+  <ul>
+    <li><strong>Payments Control Centre + AI chat.</strong> Support worker traces failed/suspicious payments, sees fraud flags, asks an agent "why?" over history.</li>
+    <li><strong>Single repo, swappable <code>Store</code> interface</strong> — <code>store/mongo</code> and <code>store/postgres</code>. One frontend, one API, one perf harness.</li>
+    <li><strong>Go</strong> backend (API + worker) · <strong>Next.js</strong> frontend · <strong>single EC2 + docker-compose</strong> · <strong>MongoDB on Atlas</strong>.</li>
+    <li>Phasing: skeleton → Mongo build → PG port → perf both → demo polish.</li>
+  </ul>
+</div>
+
+<h2>1. Decisions — locked</h2>
+
+<table>
+  <thead>
+    <tr><th>#</th><th>Decision</th><th>Choice</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>1</td>
+      <td>Use case</td>
+      <td><span class="tag locked">Locked</span><strong>Payments Control Centre + AI chat.</strong> Support worker traces failed / suspicious / missing payments, sees fraud flags, asks the agent for context and "similar cases" over historical transactions.</td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>AI scope</td>
+      <td><span class="tag locked">Locked</span><strong>Full.</strong> Voyage embeddings + Vector Search for "similar cases", plus a chat panel over payments history. This is the sharpest MongoDB-vs-PG differentiator.</td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td>Fraud signals</td>
+      <td><span class="tag locked">Locked</span><strong>Agentic model.</strong> Small LLM on the worker pulls context (recent txns, geo, similar past frauds via vector search) and returns <code>{is_fraud, score, reasoning}</code>. Async — off the write path. Same architecture on both DBs, so it's a fair comparison.</td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td>Auth</td>
+      <td><span class="tag locked">Locked</span><strong>Skipped.</strong> Hardcoded merchant / support-user context in a header. Adds nothing to the DB comparison or the perf test.</td>
+    </tr>
+    <tr>
+      <td>5</td>
+      <td>Backend language</td>
+      <td><span class="tag locked">Locked</span><strong>Go.</strong> Single HTTP service + background worker sharing a Go module.</td>
+    </tr>
+    <tr>
+      <td>6</td>
+      <td>Frontend</td>
+      <td><span class="tag locked">Locked</span><strong>Next.js (App Router) + Tailwind.</strong> Lean scope: one control-centre screen (search, list, detail, similar-cases panel, chat panel) plus a live event-feed sidebar.</td>
+    </tr>
+    <tr>
+      <td>7</td>
+      <td>Deploy target</td>
+      <td><span class="tag locked">Locked</span><strong>Single EC2 + docker-compose.</strong> Containers: <code>web</code>, <code>api</code>, <code>worker</code>, <code>postgres</code>. MongoDB on Atlas. nginx routes <code>/</code> → web, <code>/v1/*</code> → api. Perf tests hit the Go API directly, so co-hosting the frontend doesn't affect numbers.</td>
+    </tr>
+    <tr>
+      <td>8</td>
+      <td>Repo shape</td>
+      <td><span class="tag locked">Locked</span><strong>Single repo, swappable <code>Store</code> interface.</strong> Two implementations, config flag picks one at boot.</td>
+    </tr>
+    <tr>
+      <td>9</td>
+      <td>PG change-events</td>
+      <td><span class="tag locked">Locked</span><strong><code>LISTEN/NOTIFY</code>.</strong> Native to PG, weaker than Change Streams (at-most-once, no resume tokens) — honest comparison.</td>
+    </tr>
+    <tr>
+      <td>10</td>
+      <td>Perf tool</td>
+      <td><span class="tag defer">Deferred</span>Decide in week 2. Any HTTP load tool (k6 / Locust / Vegeta) drives the same REST endpoints; tool choice doesn't affect the app design.</td>
+    </tr>
+    <tr>
+      <td>11</td>
+      <td>Seed data volume</td>
+      <td><span class="tag defer">Deferred</span>Set once the backend is built and we can measure seed throughput and storage footprint on the demo box.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>2. Repo &amp; code-sharing shape</h2>
+
+<div class="card good">
+  <p style="margin-top:0"><strong>One repo. One frontend. One REST contract. One perf harness.</strong> A single <code>Store</code> interface has two implementations behind it.</p>
+  <ul>
+    <li>The interface is <strong>use-case shaped</strong>, not CRUD shaped — so each impl can be idiomatic.</li>
+    <li>Each impl is free to use its DB's strengths (aggregation pipelines / Atlas Search / Change Streams on one side; CTEs / <code>tsvector</code> / <code>pgvector</code> / <code>LISTEN/NOTIFY</code> on the other).</li>
+    <li>A single contract-test suite runs against both via testcontainers — parity is enforced, not hoped for.</li>
+  </ul>
+</div>
+
+<h3>Interface sketch</h3>
+<pre style="background:var(--code-bg); border:1px solid var(--border); border-radius:8px; padding:14px; font: 13px/1.5 ui-monospace, Menlo, monospace; overflow-x:auto;">type Store interface {
+    SearchPayments(ctx, query, filters) ([]Payment, error)      // fuzzy + filter
+    FindSimilarPayments(ctx, vec, k, filters) ([]Payment, error) // vector kNN
+    GetPaymentTimeline(ctx, customerID, window) (Timeline, error) // fraud context
+    SubscribeToPaymentEvents(ctx) (&lt;-chan Event, error)          // live feed
+    // ... plus CRUD-shaped ops for create/get/update
+}</pre>
+<p class="sub">No <code>Find(collection, filter)</code> or <code>Query(sql, args)</code>. The interface hides <em>how</em>.</p>
+
+<h2>3. Common vs different</h2>
+
+<div class="grid-2">
+  <div class="card">
+    <h3 style="margin-top:0">Common — write once</h3>
+    <ul>
+      <li>Next.js frontend (control centre + chat + live feed)</li>
+      <li>REST API + OpenAPI contract</li>
+      <li>Domain DTOs and validation</li>
+      <li><code>Store</code> interface + contract tests</li>
+      <li>Seed generator (targets either backend)</li>
+      <li>Perf harness (HTTP-level, backend-agnostic)</li>
+      <li>docker-compose</li>
+      <li>Fraud worker (agentic model wiring is DB-agnostic)</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3 style="margin-top:0">Different — implement twice</h3>
+    <table style="margin:0">
+      <thead><tr><th>Concern</th><th>Mongo</th><th>Postgres</th></tr></thead>
+      <tbody>
+        <tr><td>Schema</td><td>Collections</td><td>Tables + migrations</td></tr>
+        <tr><td>Fuzzy search</td><td>Atlas Search</td><td><code>pg_trgm</code>+<code>tsvector</code></td></tr>
+        <tr><td>Vector search</td><td>Atlas Vector Search</td><td><code>pgvector</code> (HNSW)</td></tr>
+        <tr><td>Change events</td><td>Change Streams</td><td><code>LISTEN/NOTIFY</code></td></tr>
+        <tr><td>Aggregations</td><td>Pipeline</td><td>SQL / CTE</td></tr>
+        <tr><td>Indexes</td><td>Compound, text, vector</td><td>B-tree, GIN, HNSW</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<h2>4. Build phasing (shape only)</h2>
+
+<table>
+  <thead><tr><th>Phase</th><th>Rough days</th><th>Output</th></tr></thead>
+  <tbody>
+    <tr><td>Skeleton</td><td>1–2</td><td>Repo, docker-compose, Next.js shell, <code>Store</code> interface, one thin slice (create + list payment) against Mongo.</td></tr>
+    <tr><td>Mongo build</td><td>3–6</td><td>Control centre UI, search, similar-case retrieval (Voyage + Vector Search), live event feed (Change Streams), fraud worker (agentic model). Contract tests green.</td></tr>
+    <tr><td>Postgres port</td><td>7–10</td><td>Schema + migrations, PG <code>Store</code> impl, <code>pg_trgm</code>+<code>tsvector</code>, <code>pgvector</code>, <code>LISTEN/NOTIFY</code>. Same contract tests green against PG.</td></tr>
+    <tr><td>Perf</td><td>11–13</td><td>Load-test scenarios covering the key user-flow chain (search → detail → similar → chat). Run against both. Tune indexes/queries on M50-equivalent. Comparison report.</td></tr>
+    <tr><td>Buffer + demo</td><td>14</td><td>README, demo script, TFW talking points.</td></tr>
+  </tbody>
+</table>
+
+<h2>5. Performance testing — planning notes</h2>
+<ul>
+  <li>Design scenarios around the <strong>chains</strong> a support worker actually runs: search partial customer ref → open payment → fetch similar cases → ask the agent → post note.</li>
+  <li>KPIs: p50/p95/p99 latency, throughput, error rate. Track per endpoint <em>and</em> per full user flow.</li>
+  <li>Parameterize payloads with realistic distributions (Zipfian for customer IDs so caches actually matter).</li>
+  <li>Volume decided after the app is built — big enough that index choices materially matter on an M50-equivalent.</li>
+</ul>
+
+<h2>6. Verification — what "done" looks like</h2>
+<p>Same demo script runs identically on both backends:</p>
+<ol>
+  <li><code>make seed BACKEND=mongo|postgres</code> populates the chosen store.</li>
+  <li>Support worker opens control centre → fuzzy-searches a partial customer ref → gets ranked matches.</li>
+  <li>Opens a failed payment → "similar cases" panel shows vector-nearest historical failures.</li>
+  <li>Fraud panel shows the agentic model's decision + reasoning.</li>
+  <li>Chat: "why did this fail?" — agent retrieves context via Vector Search / <code>pgvector</code> and answers.</li>
+  <li>Live event feed shows a newly-landing payment without a page refresh.</li>
+  <li>Perf run: HTTP load exercises the key chain; report shows p50/p95/p99, error rate, throughput for both DBs on the same scenario.</li>
+</ol>
+<p>All 7 pass on both backends → v1 is done.</p>
+
+<h2>7. Deliverables</h2>
+<ol>
+  <li>GitHub repo (single) with both <code>Store</code> implementations and both docker-compose profiles.</li>
+  <li>README — run instructions, TFW feature callouts, sample walkthrough scenarios.</li>
+  <li>Short performance report — same scenarios, both backends, the KPIs and graphs worth putting in front of a customer.</li>
+  <li>"Was one DB easier to build with Claude?" — captured while building, not retrofitted.</li>
+</ol>
+
+<hr />
+<p class="sub">Approach approved. Day-by-day roadmap is the next document.</p>
+
+</main>
+</body>
+</html>

@@ -2,31 +2,67 @@
 <meta charset="utf-8">
 <title>Gripe — Tasks</title>
 <style>
-  :root { color-scheme: light dark; --b:#8884; --hi:#3b82f622; }
-  body { font: 14px/1.4 system-ui, sans-serif; margin: 2rem; max-width: 1100px; }
+  :root { color-scheme: light dark; --b:#8884; --hi:#3b82f622; --muted:#888; }
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 2rem; max-width: 1150px; }
   h1 { margin: 0 0 .25rem; }
-  .meta { color: #888; margin-bottom: 1rem; }
-  .controls { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem; }
-  input, select { padding: .4rem .6rem; border: 1px solid var(--b); border-radius: 6px; background: transparent; color: inherit; }
-  table { border-collapse: collapse; width: 100%; }
-  th, td { border-bottom: 1px solid var(--b); padding: .5rem .6rem; text-align: left; vertical-align: top; }
-  th { cursor: pointer; user-select: none; position: sticky; top: 0; background: canvas; }
+  .meta { color: var(--muted); margin-bottom: 1rem; }
+  .controls { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem; align-items: center; }
+  input, select, button { padding: .4rem .6rem; border: 1px solid var(--b); border-radius: 6px; background: transparent; color: inherit; font: inherit; }
+  button { cursor: pointer; }
+  .counts { margin-left: auto; color: var(--muted); }
+
+  details.uc { border: 1px solid var(--b); border-radius: 8px; margin-bottom: .75rem; overflow: hidden; }
+  details.uc[open] { background: color-mix(in oklab, canvas 96%, var(--hi)); }
+  summary.uc-head { padding: .6rem .8rem; cursor: pointer; user-select: none; display: flex; gap: .6rem; align-items: baseline; }
+  summary.uc-head::-webkit-details-marker { display: none; }
+  summary.uc-head::before { content: "▶"; font-size: .7em; opacity: .6; transition: transform .1s; }
+  details[open] summary.uc-head::before { transform: rotate(90deg); }
+  .uc-id { font-weight: 600; }
+  .uc-title { color: var(--muted); }
+  .uc-progress { margin-left: auto; font-size: .85em; color: var(--muted); }
+
+  table { border-collapse: collapse; width: 100%; table-layout: fixed; }
+  th, td { border-top: 1px solid var(--b); padding: .45rem .8rem; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+  th:nth-child(1), td:nth-child(1) { width: 3rem; }
+  th:nth-child(2), td:nth-child(2) { width: 9rem; }
+  th:nth-child(4), td:nth-child(4) { width: 6rem; }
+  th:nth-child(5), td:nth-child(5) { width: 5.5rem; }
+  th:nth-child(6), td:nth-child(6) { width: 16rem; }
+  td.paths { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .82em; color: var(--muted); }
+  td.paths:empty::before, td.paths.empty::before { content: "—"; opacity: .5; }
+  th { cursor: pointer; user-select: none; font-weight: 500; color: var(--muted); background: color-mix(in oklab, canvas 92%, transparent); }
   th::after { content: ""; margin-left: .3rem; opacity: .5; }
   th.asc::after { content: "▲"; }
   th.desc::after { content: "▼"; }
   tr.done td:not(.status) { text-decoration: line-through; opacity: .55; }
-  tr:hover { background: var(--hi); }
-  .pill { display: inline-block; padding: .1rem .5rem; border-radius: 999px; border: 1px solid var(--b); font-size: .8em; }
-  .status { cursor: pointer; }
-  .status[data-v="done"] { color: #16a34a; }
+  tbody tr:hover { background: var(--hi); }
+  .pill { display: inline-block; padding: .05rem .45rem; border-radius: 999px; border: 1px solid var(--b); font-size: .78em; }
+  .status { white-space: nowrap; }
+  .status[data-v="done"]  { color: #16a34a; }
   .status[data-v="doing"] { color: #ca8a04; }
-  .status[data-v="todo"] { color: #6b7280; }
-  .counts { margin-left: auto; color: #888; }
-  #empty { padding: 2rem; text-align: center; color: #888; display: none; }
+  .status[data-v="todo"]  { color: #6b7280; }
+  #empty { padding: 2rem; text-align: center; color: var(--muted); display: none; }
+
+  .uc-open { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+  .uc-open:hover { color: #3b82f6; }
+
+  dialog.uc-modal { border: 1px solid var(--b); border-radius: 10px; padding: 0; max-width: 720px; width: 90vw; max-height: 82vh; background: canvas; color: inherit; }
+  dialog.uc-modal::backdrop { background: #0006; backdrop-filter: blur(2px); }
+  dialog.uc-modal header { display: flex; align-items: center; gap: .6rem; padding: .8rem 1rem; border-bottom: 1px solid var(--b); position: sticky; top: 0; background: canvas; }
+  dialog.uc-modal header .id { font-weight: 600; }
+  dialog.uc-modal header .close { margin-left: auto; }
+  dialog.uc-modal .body { padding: 1rem 1.2rem 1.4rem; overflow: auto; max-height: calc(82vh - 3.2rem); }
+  dialog.uc-modal .body h3 { margin: 1rem 0 .3rem; font-size: 1rem; }
+  dialog.uc-modal .body h3:first-child { margin-top: 0; }
+  dialog.uc-modal .body ul { margin: .3rem 0 .6rem 1.2rem; padding: 0; }
+  dialog.uc-modal .body li { margin: .15rem 0; }
+  dialog.uc-modal .body p { margin: .3rem 0; }
+  dialog.uc-modal .body code { background: color-mix(in oklab, canvas 88%, transparent); padding: .05rem .3rem; border-radius: 3px; font-size: .9em; }
+  dialog.uc-modal .body strong { color: inherit; }
 </style>
 
 <h1>Gripe — Tasks</h1>
-<div class="meta">Two-week SA challenge. Click status to cycle todo → doing → done. Click headers to sort. State persists in localStorage.</div>
+<div class="meta">Static view — open directly in a browser (no server needed). Task data lives in the <code>&lt;script id="tasks-data"&gt;</code> block; use-case bodies live in <code>&lt;script id="usecases-data"&gt;</code>. Edit either to update. <code>usecases.md</code> is the human-editable source; keep them in sync.</div>
 
 <div class="controls">
   <input id="q" placeholder="filter…" autofocus>
@@ -38,47 +74,307 @@
     <option value="doing">doing</option>
     <option value="done">done</option>
   </select>
+  <button id="expandAll">expand all</button>
+  <button id="collapseAll">collapse all</button>
   <span class="counts" id="counts"></span>
 </div>
 
-<table>
-  <thead><tr>
-    <th data-k="id">#</th>
-    <th data-k="phase">Phase</th>
-    <th data-k="title">Task</th>
-    <th data-k="backend">Backend</th>
-    <th data-k="status">Status</th>
-  </tr></thead>
-  <tbody id="rows"></tbody>
-</table>
+<div id="groups"></div>
 <div id="empty">No tasks match.</div>
 
+<dialog class="uc-modal" id="ucModal">
+  <header>
+    <span class="id" id="ucModalId"></span>
+    <span id="ucModalTitle"></span>
+    <button class="close" id="ucModalClose">close</button>
+  </header>
+  <div class="body" id="ucModalBody"></div>
+</dialog>
+
+<script id="tasks-data" type="application/json">
+[
+  { "id": "1",  "usecase": "-",     "phase": "Skeleton",          "title": "Init repo + docker-compose (web/api/worker/postgres)", "backend": "both",     "status": "todo", "paths": "" },
+  { "id": "2",  "usecase": "-",     "phase": "Skeleton",          "title": "Next.js App Router shell + Tailwind + three surface routes (admin/merchant/checkout)", "backend": "common",   "status": "todo", "paths": "" },
+  { "id": "3",  "usecase": "-",     "phase": "Skeleton",          "title": "Define use-case-shaped Store interface (CreatePayment/RefundPayment/ListMerchantPayments/ListAllPayments/CreateSubscription/DueSubscriptions/CancelSubscription/CapturePayment/GetPayment)", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "4",  "usecase": "-",     "phase": "Skeleton",          "title": "Go HTTP service scaffold + config flag to pick backend", "backend": "common",   "status": "todo", "paths": "" },
+  { "id": "5",  "usecase": "-",     "phase": "Skeleton",          "title": "Actor header middleware (X-Actor-Role + X-Actor-Id)", "backend": "common",   "status": "todo", "paths": "" },
+  { "id": "6",  "usecase": "-",     "phase": "Skeleton",          "title": "Domain DTOs + validation (Payment/Refund/Subscription/PaymentMethod)", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "7",  "usecase": "UC-2",  "phase": "Skeleton",          "title": "Idempotency middleware + key persistence contract", "backend": "common",   "status": "todo", "paths": "" },
+  { "id": "8",  "usecase": "UC-1",  "phase": "Skeleton",          "title": "Thin slice: CreatePayment (card) + GetPayment against Mongo", "backend": "mongo", "status": "todo", "paths": "" },
+  { "id": "9",  "usecase": "-",     "phase": "Skeleton",          "title": "Seed generator wired to Store interface", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "10", "usecase": "-",     "phase": "Mongo build",       "title": "Mongo schema (payments/refunds/subscriptions/merchants/customers/idempotency_keys)", "backend": "mongo", "status": "todo", "paths": "" },
+  { "id": "11", "usecase": "-",     "phase": "Mongo build",       "title": "Compound indexes (merchant_id + created_at + status) + unique on idempotency_key", "backend": "mongo", "status": "todo", "paths": "" },
+  { "id": "12", "usecase": "UC-1",  "phase": "Mongo build",       "title": "Payment method mocks: card auth+capture with .13 decline rule", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "13", "usecase": "UC-1",  "phase": "Mongo build",       "title": "Payment method mocks: Apple Pay + Google Pay (mirror card semantics)", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "14", "usecase": "UC-1",  "phase": "Mongo build",       "title": "Payment method mocks: direct debit (auth-only + cycler settle)", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "15", "usecase": "UC-1",  "phase": "Mongo build",       "title": "Payment method mocks: bank transfer (pending + async settled event)", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "16", "usecase": "UC-3",  "phase": "Mongo build",       "title": "CapturePayment endpoint + state machine", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "17", "usecase": "UC-4",  "phase": "Mongo build",       "title": "RefundPayment endpoint + partial/full + over-refund guard", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "18", "usecase": "-",     "phase": "Mongo build",       "title": "Money math: Decimal128 for amounts (never float)", "backend": "mongo", "status": "todo", "paths": "" },
+  { "id": "19", "usecase": "UC-7",  "phase": "Mongo build",       "title": "Subscription model + CreateSubscription", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "20", "usecase": "UC-8",  "phase": "Mongo build",       "title": "DueSubscriptions query + cycler worker (idempotent per cycle_index)", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "21", "usecase": "UC-9",  "phase": "Mongo build",       "title": "CancelSubscription", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "22", "usecase": "UC-5",  "phase": "Mongo build",       "title": "Merchant dashboard: list own payments + filters + cursor pagination", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "23", "usecase": "UC-4",  "phase": "Mongo build",       "title": "Merchant dashboard: refund action from a payment detail view", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "24", "usecase": "UC-6",  "phase": "Mongo build",       "title": "Employee console: list all payments across merchants + admin-only filters", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "25", "usecase": "UC-6",  "phase": "Mongo build",       "title": "Employee console: cross-merchant aggregate (volume per merchant per day)", "backend": "mongo", "status": "todo", "paths": "" },
+  { "id": "26", "usecase": "-",     "phase": "Mongo build",       "title": "Contract tests via testcontainers (Mongo green for all UC-1..UC-9)", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "27", "usecase": "-",     "phase": "Postgres port",     "title": "PG schema + migrations (goose or golang-migrate) — Aurora-compatible SQL only", "backend": "postgres", "status": "todo", "paths": "" },
+  { "id": "28", "usecase": "-",     "phase": "Postgres port",     "title": "Money math: numeric(19,4) for amounts", "backend": "postgres", "status": "todo", "paths": "" },
+  { "id": "29", "usecase": "UC-2",  "phase": "Postgres port",     "title": "PG unique index on idempotency_key + expiry", "backend": "postgres", "status": "todo", "paths": "" },
+  { "id": "30", "usecase": "-",     "phase": "Postgres port",     "title": "PG composite indexes (merchant_id + created_at + status)", "backend": "postgres", "status": "todo", "paths": "" },
+  { "id": "31", "usecase": "UC-6",  "phase": "Postgres port",     "title": "PG cross-merchant aggregate via SQL/CTE", "backend": "postgres", "status": "todo", "paths": "" },
+  { "id": "32", "usecase": "-",     "phase": "Postgres port",     "title": "Contract tests green against PG for all UC-1..UC-9", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "33", "usecase": "-",     "phase": "Postgres port",     "title": "Verify Aurora compatibility (no vendor-specific SQL) — run migrations on Aurora if available", "backend": "postgres", "status": "todo", "paths": "" },
+  { "id": "34", "usecase": "UC-10", "phase": "Customer checkout", "title": "Checkout page: pick method + submit payment", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "35", "usecase": "UC-10", "phase": "Customer checkout", "title": "Success + failure pages", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "36", "usecase": "UC-10", "phase": "Customer checkout", "title": "Wire all five mock methods end-to-end from checkout", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "37", "usecase": "-",     "phase": "Perf",              "title": "Pick HTTP load tool (k6/locust/vegeta)", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "38", "usecase": "-",     "phase": "Perf",              "title": "Perf harness scenarios: create + list + refund + cycler", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "39", "usecase": "-",     "phase": "Perf",              "title": "Decide seed data volume + run seed on demo box", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "40", "usecase": "-",     "phase": "Perf",              "title": "Run scenarios against Mongo; capture p50/p95/p99", "backend": "mongo", "status": "todo", "paths": "" },
+  { "id": "41", "usecase": "-",     "phase": "Perf",              "title": "Run scenarios against PG; capture p50/p95/p99", "backend": "postgres", "status": "todo", "paths": "" },
+  { "id": "42", "usecase": "-",     "phase": "Perf",              "title": "Tune indexes/queries on M50-equivalent + Aurora-equivalent", "backend": "both", "status": "todo", "paths": "" },
+  { "id": "43", "usecase": "-",     "phase": "Perf",              "title": "Comparison report with graphs", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "44", "usecase": "-",     "phase": "Buffer + demo",     "title": "nginx routing / -> web + /v1/* -> api", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "45", "usecase": "-",     "phase": "Buffer + demo",     "title": "README with run instructions + feature callouts", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "46", "usecase": "-",     "phase": "Buffer + demo",     "title": "Demo script walking the 9 verification steps", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "47", "usecase": "-",     "phase": "Buffer + demo",     "title": "Note: was one DB easier to build with Claude?", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "48", "usecase": "UC-11", "phase": "Skeleton",          "title": "Add merchant.balance field to Merchant DTO + validation", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "49", "usecase": "UC-11", "phase": "Skeleton",          "title": "Config constant for Gripe fee rate (0.03) + currency-aware rounding helper", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "50", "usecase": "UC-11", "phase": "Mongo build",       "title": "Mongo merchant.balance schema (Decimal128) + atomic update on settle", "backend": "mongo", "status": "todo", "paths": "" },
+  { "id": "51", "usecase": "UC-11", "phase": "Mongo build",       "title": "SettlePayment credits balance by (amount - 3% fee) atomically with state transition", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "52", "usecase": "UC-11", "phase": "Mongo build",       "title": "SettleRefund debits balance by (refund_amount - 3% fee) atomically (UC-11 + UC-4)", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "53", "usecase": "UC-11", "phase": "Mongo build",       "title": "Contract test: N settled payments -> balance == sum(amount) - sum(fees) (Mongo)", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "54", "usecase": "UC-11", "phase": "Postgres port",     "title": "PG merchant.balance numeric(19,4) + CHECK + atomic update on settle", "backend": "postgres", "status": "todo", "paths": "" },
+  { "id": "55", "usecase": "UC-11", "phase": "Postgres port",     "title": "Contract test: balance invariant green against PG", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "56", "usecase": "UC-11", "phase": "Mongo build",       "title": "Merchant dashboard: show current balance + total fees paid to Gripe", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "57", "usecase": "UC-11", "phase": "Mongo build",       "title": "Employee console: show per-merchant balance + Gripe revenue aggregate", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "58", "usecase": "UC-12", "phase": "Skeleton",          "title": "Currency enum {USD,GBP,EUR} + validation at API boundary + reject others", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "59", "usecase": "UC-12", "phase": "Skeleton",          "title": "Currency-aware money helper: parse/format/round-half-even to smallest unit", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "60", "usecase": "UC-12", "phase": "Mongo build",       "title": "Merchant.balances as per-currency map {USD: Decimal128, GBP: ..., EUR: ...}", "backend": "mongo", "status": "todo", "paths": "" },
+  { "id": "61", "usecase": "UC-12", "phase": "Mongo build",       "title": "Fee ledger keyed by currency (Gripe revenue per currency)", "backend": "mongo", "status": "todo", "paths": "" },
+  { "id": "62", "usecase": "UC-12", "phase": "Mongo build",       "title": "Contract test: three currencies -> three independent balances never mix (Mongo)", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "63", "usecase": "UC-12", "phase": "Mongo build",       "title": "Contract test: refund currency must match payment currency", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "64", "usecase": "UC-12", "phase": "Postgres port",     "title": "PG merchant_balances (merchant_id, currency, balance numeric(19,4)) with unique (merchant_id, currency)", "backend": "postgres", "status": "todo", "paths": "" },
+  { "id": "65", "usecase": "UC-12", "phase": "Postgres port",     "title": "PG fee_ledger per currency", "backend": "postgres", "status": "todo", "paths": "" },
+  { "id": "66", "usecase": "UC-12", "phase": "Postgres port",     "title": "Contract tests for multi-currency green against PG", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "67", "usecase": "UC-12", "phase": "Mongo build",       "title": "Merchant dashboard: one balance row per currency with activity", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "68", "usecase": "UC-12", "phase": "Mongo build",       "title": "Employee console: Gripe revenue split by currency", "backend": "common", "status": "todo", "paths": "" }
+]
+</script>
+
+<script id="usecases-data" type="text/markdown">
+## UC-1: Create a payment (any method)
+
+**Persona:** merchant (via API) or customer (via checkout, later phase)
+**So that:** money can move.
+
+- Backend endpoint: `POST /v1/payments` with `Idempotency-Key` header.
+- Supported methods, all mocked: `card`, `direct_debit`, `bank_transfer`, `apple_pay`, `google_pay`.
+- Card / Apple Pay / Google Pay: auth + capture synchronous (mock succeeds unless the amount ends in `.13` → simulated decline).
+- Direct debit: auth-only, settles after N cycler ticks.
+- Bank transfer: pending until an async "settled" event lands.
+- Store method: `CreatePayment(ctx, input, idempotencyKey)`.
+
+**Done when:** all five methods produce the right terminal state on both backends; the mock decline path is covered by a contract test.
+
+## UC-2: Idempotent payment creation
+
+**Persona:** merchant (any integrator that retries).
+**So that:** network retries don't create duplicate charges.
+
+- Same `Idempotency-Key` + same body → identical response, no new payment row.
+- Same key + different body → 409, name the conflict.
+- Keys expire after 24h (both backends).
+
+**Done when:** contract test covers same-body-replay, different-body-conflict, and post-expiry replay on both backends.
+
+## UC-3: Capture a previously authorized payment
+
+**Persona:** merchant.
+**So that:** merchants who authorize now and ship later can capture on their own schedule.
+
+- `POST /v1/payments/{id}/capture`.
+- Only valid on authorized-but-uncaptured card payments.
+- Store method: `CapturePayment(ctx, paymentID)`.
+
+**Done when:** capture succeeds on an authorized payment and fails cleanly on any other state, both backends.
+
+## UC-4: Refund a payment (merchant-chosen amount)
+
+**Persona:** merchant (self-serve), Gripe employee (support override).
+**So that:** money moves back when needed, on the merchant's terms.
+
+- `POST /v1/payments/{id}/refunds` with `{amount, idempotency_key}`.
+- The merchant chooses the amount. Constraint: `0 < amount ≤ (captured_amount − already_refunded)`.
+- Over-refund → 422 with the remaining refundable amount in the response body.
+- Sum of refunds ≤ captured amount — enforced in the store, not the handler.
+- Direct debit refunds queue for the cycler; card refunds settle synchronously.
+- Store method: `RefundPayment(ctx, paymentID, amount, idempotencyKey)`.
+- Side effect: debits the merchant balance by `amount − (amount × 0.03)` (mirror the credit rule in UC-11).
+
+**Done when:** partial refunds, full refunds, over-refund rejection, and the balance debit all pass the contract suite on both backends.
+
+## UC-5: Merchant sees only their own payments
+
+**Persona:** merchant.
+**So that:** a merchant can operate their dashboard without seeing anyone else's data.
+
+- `GET /v1/payments` filtered by `X-Actor-Id` when `X-Actor-Role: merchant`.
+- Filters: status, method, date range, amount range.
+- Cursor pagination.
+- Store method: `ListMerchantPayments(ctx, merchantID, filters, cursor)`.
+
+**Done when:** merchant A cannot read merchant B's payment by direct ID (`GetPayment` denies), both backends.
+
+## UC-6: Gripe employee sees every merchant and every payment
+
+**Persona:** Gripe employee (admin).
+**So that:** support and ops can trace anything.
+
+- Same list endpoint but no merchant filter when `X-Actor-Role: admin`.
+- Additional filter: `merchant_id`.
+- Aggregate view: payment volume per merchant per day.
+- Store methods: `ListAllPayments(ctx, filters, cursor)` + a dashboard aggregate method.
+
+**Done when:** admin console loads a 30-day cross-merchant summary under 300ms p95 on seeded data, both backends.
+
+## UC-7: Create a subscription
+
+**Persona:** merchant.
+**So that:** merchants can bill on a schedule without writing a scheduler.
+
+- `POST /v1/subscriptions` with amount, cadence (`daily|weekly|monthly`), payment method, customer.
+- Store method: `CreateSubscription(ctx, input)`.
+
+**Done when:** subscription persists with a correct `next_charge_at`, both backends.
+
+## UC-8: Subscription cycler creates the next payment on schedule
+
+**Persona:** system (background worker).
+**So that:** subscriptions actually charge without a human trigger.
+
+- Worker polls `DueSubscriptions(ctx, asOf, limit)` on a short interval.
+- For each due subscription: create a payment via the same `CreatePayment` path (same idempotency), advance `next_charge_at`.
+- Idempotent per (subscription_id, cycle_index) — cycler crashes must not double-charge.
+
+**Done when:** running the cycler twice back-to-back produces exactly one payment per due subscription per cycle, both backends.
+
+## UC-9: Cancel a subscription
+
+**Persona:** merchant or customer.
+**So that:** recurring charges stop.
+
+- `POST /v1/subscriptions/{id}/cancel`.
+- Merchant can cancel any of their own; customer can cancel any of theirs.
+- Store method: `CancelSubscription(ctx, subscriptionID)`.
+
+**Done when:** cancelled subscription is skipped by the cycler on the next tick, both backends.
+
+## UC-11: Merchant balance credited on payment (minus Gripe fee)
+
+**Persona:** system (side effect of payment settlement).
+**So that:** merchants can see what they've actually earned, net of Gripe's cut.
+
+- Every merchant has a `balance` **per currency** — see UC-12. Payments in USD only touch the USD balance; same for GBP and EUR.
+- On payment settlement (card/Apple Pay/Google Pay: synchronous; direct debit / bank transfer: on the async settle event), credit the merchant balance by `amount − fee`, where `fee = round(amount × 0.03, 2)` (currency's smallest-unit rounding).
+- On refund settlement (UC-4), debit by `refund_amount − refund_fee` where `refund_fee = round(refund_amount × 0.03, 2)`. Fees are not returned to the merchant on refund — they're clawed back from the merchant's balance, matching Stripe's behaviour.
+- Atomic with the payment/refund state transition — either both happen or neither. Contract test asserts that a mid-write crash never leaves balance out of sync with settled amounts.
+- Fee rate `0.03` lives in one config constant; a contract test pins it.
+- Store methods: `SettlePayment(ctx, paymentID)` and `SettleRefund(ctx, refundID)` update balance as part of the same operation. No separate `AdjustBalance` — that would be CRUD-shaped and let handlers drift out of sync.
+
+**Done when:** settling N payments totalling `X` leaves the merchant's balance at exactly `X − round(sum(amount × 0.03))`, and refunding brings it down by `refund_net`, on both backends. No path exists to move the balance without a corresponding payment or refund.
+
+## UC-12: Multi-currency (USD / GBP / EUR)
+
+**Persona:** merchant, customer.
+**So that:** merchants can accept payments in any of the three supported currencies without FX.
+
+- Every payment carries `currency ∈ {USD, GBP, EUR}`. Reject anything else at the API boundary.
+- Merchant balance is **per currency** — a merchant has one balance per currency they've received (`balances: {USD: ..., GBP: ..., EUR: ...}`).
+- Refund currency must equal the original payment currency; server enforces.
+- Fee is 3% of the payment amount in the payment's currency — no conversion.
+- Fee ledger entries are also per-currency (Gripe accumulates USD/GBP/EUR fee revenue separately).
+- Rounding: to the currency's smallest unit (2 dp for all three). Round half-even.
+- Merchant dashboard shows one balance row per currency the merchant has activity in.
+
+**Done when:** creating payments in all three currencies for one merchant produces three independent balances that never mix, and refunding a USD payment only touches the USD balance — on both backends.
+
+## UC-10: Customer checkout (last)
+
+**Persona:** paying customer.
+**So that:** a customer can complete a payment on a merchant's Gripe-hosted checkout page.
+
+- Next.js checkout surface for a merchant.
+- Picks a payment method; hits `POST /v1/payments` with customer + merchant context.
+- Success page + failure page.
+
+**Done when:** each of the five mock methods completes end-to-end for a customer, on both backends. This is intentionally the last thing built.
+</script>
+
 <script>
-const LS = "gripe.tasks.status.v1";
-const STATUSES = ["todo", "doing", "done"];
-let rows = [], sortK = "id", sortDir = 1;
+let rows = [], usecases = {}, sortK = "id", sortDir = 1;
 
-function parseCSV(text) {
-  const [head, ...lines] = text.trim().split("\n");
-  const cols = head.split(",");
-  return lines.map(l => Object.fromEntries(l.split(",").map((v, i) => [cols[i], v])));
+function parseUsecases(md) {
+  const out = {};
+  const lines = md.split("\n");
+  let current = null, buf = [];
+  const flush = () => { if (current) out[current.id] = { title: current.title, body: buf.join("\n").trim() }; };
+  for (const line of lines) {
+    const m = line.match(/^##\s+(UC-\d+)\s*:?\s*(.*)$/);
+    if (m) { flush(); current = { id: m[1], title: m[2].trim() }; buf = []; continue; }
+    if (/^##\s+/.test(line)) { flush(); current = null; buf = []; continue; }
+    if (current) buf.push(line);
+  }
+  flush();
+  return out;
 }
 
-function save() {
-  const map = Object.fromEntries(rows.map(r => [r.id, r.status]));
-  localStorage.setItem(LS, JSON.stringify(map));
+function mdToHtml(md) {
+  const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const inline = s => esc(s)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  const html = [];
+  let inList = false;
+  for (const raw of md.split("\n")) {
+    const line = raw.replace(/\s+$/, "");
+    if (/^- /.test(line)) {
+      if (!inList) { html.push("<ul>"); inList = true; }
+      html.push("<li>" + inline(line.slice(2)) + "</li>");
+      continue;
+    }
+    if (inList) { html.push("</ul>"); inList = false; }
+    if (/^###\s+/.test(line))     { html.push("<h3>" + inline(line.replace(/^###\s+/, "")) + "</h3>"); continue; }
+    if (line === "" || line === "---") { html.push(""); continue; }
+    html.push("<p>" + inline(line) + "</p>");
+  }
+  if (inList) html.push("</ul>");
+  return html.join("\n");
 }
-function load() {
-  const map = JSON.parse(localStorage.getItem(LS) || "{}");
-  rows.forEach(r => { if (map[r.id]) r.status = map[r.id]; });
+
+function openUsecase(uc) {
+  const dlg = document.getElementById("ucModal");
+  const uc0 = usecases[uc];
+  document.getElementById("ucModalId").textContent = uc;
+  document.getElementById("ucModalTitle").textContent = uc0 ? uc0.title : "(not found in usecases.md)";
+  document.getElementById("ucModalBody").innerHTML = uc0 ? mdToHtml(uc0.body) : "<p>No matching section in <code>usecases.md</code>.</p>";
+  dlg.showModal();
 }
 
 function fillSelect(sel, values) {
-  [...new Set(values)].sort().forEach(v => {
+  [...new Set(values)].filter(Boolean).sort().forEach(v => {
     const o = document.createElement("option");
     o.value = o.textContent = v;
     sel.appendChild(o);
   });
+}
+
+function ucOrder(uc) {
+  if (uc === "-") return Infinity;
+  const n = parseInt(uc.replace(/[^\d]/g, ""), 10);
+  return Number.isFinite(n) ? n : Infinity - 1;
 }
 
 function render() {
@@ -86,69 +382,104 @@ function render() {
   const fp = document.getElementById("phase").value;
   const fb = document.getElementById("backend").value;
   const fs = document.getElementById("status").value;
-  const tbody = document.getElementById("rows");
-  tbody.innerHTML = "";
+  const host = document.getElementById("groups");
+  host.innerHTML = "";
 
   const filtered = rows
     .filter(r => !fp || r.phase === fp)
     .filter(r => !fb || r.backend === fb)
     .filter(r => !fs || r.status === fs)
-    .filter(r => !q || Object.values(r).join(" ").toLowerCase().includes(q))
-    .sort((a, b) => {
+    .filter(r => !q || Object.values(r).join(" ").toLowerCase().includes(q));
+
+  document.getElementById("empty").style.display = filtered.length ? "none" : "block";
+  const total = rows.length, done = rows.filter(r => r.status === "done").length, doing = rows.filter(r => r.status === "doing").length;
+  document.getElementById("counts").textContent = `${filtered.length} shown · ${done} done · ${doing} doing · ${total} total`;
+
+  const groups = new Map();
+  for (const r of filtered) {
+    const key = r.usecase || "-";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r);
+  }
+
+  const keys = [...groups.keys()].sort((a, b) => ucOrder(a) - ucOrder(b));
+
+  for (const uc of keys) {
+    const items = groups.get(uc).sort((a, b) => {
       const av = sortK === "id" ? +a[sortK] : a[sortK];
       const bv = sortK === "id" ? +b[sortK] : b[sortK];
       return av > bv ? sortDir : av < bv ? -sortDir : 0;
     });
 
-  document.getElementById("empty").style.display = filtered.length ? "none" : "block";
-  const done = rows.filter(r => r.status === "done").length;
-  document.getElementById("counts").textContent = `${filtered.length} shown · ${done}/${rows.length} done`;
+    const uc0 = usecases[uc];
+    const title = uc === "-" ? "Unassigned (scaffolding / cross-cutting)" : (uc0 ? uc0.title : "(no title found in usecases.md)");
+    const groupDone = items.filter(r => r.status === "done").length;
+    const idCell = uc === "-" ? "—" : `<span class="uc-id uc-open" data-uc="${uc}" title="Open use-case details">${uc}</span>`;
 
-  for (const r of filtered) {
-    const tr = document.createElement("tr");
-    if (r.status === "done") tr.classList.add("done");
-    tr.innerHTML = `
-      <td>${r.id}</td>
-      <td><span class="pill">${r.phase}</span></td>
-      <td>${r.title}</td>
-      <td><span class="pill">${r.backend}</span></td>
-      <td class="status" data-id="${r.id}" data-v="${r.status}">● ${r.status}</td>`;
-    tbody.appendChild(tr);
+    const det = document.createElement("details");
+    det.className = "uc";
+    det.dataset.uc = uc;
+    det.open = true;
+    det.innerHTML = `
+      <summary class="uc-head">
+        ${idCell}
+        <span class="uc-title">${title}</span>
+        <span class="uc-progress">${groupDone}/${items.length}</span>
+      </summary>
+      <table>
+        <thead><tr>
+          <th data-k="id">#</th>
+          <th data-k="phase">Phase</th>
+          <th data-k="title">Task</th>
+          <th data-k="backend">Backend</th>
+          <th data-k="status">Status</th>
+          <th data-k="paths">Paths</th>
+        </tr></thead>
+        <tbody>
+          ${items.map(r => `
+            <tr class="${r.status === 'done' ? 'done' : ''}">
+              <td>${r.id}</td>
+              <td><span class="pill">${r.phase}</span></td>
+              <td>${r.title}</td>
+              <td><span class="pill">${r.backend}</span></td>
+              <td class="status" data-v="${r.status}">● ${r.status}</td>
+              <td class="paths ${r.paths ? '' : 'empty'}">${r.paths || ''}</td>
+            </tr>`).join("")}
+        </tbody>
+      </table>`;
+    host.appendChild(det);
   }
 
-  document.querySelectorAll("th").forEach(th => {
+  document.querySelectorAll("th[data-k]").forEach(th => {
     th.classList.remove("asc", "desc");
     if (th.dataset.k === sortK) th.classList.add(sortDir === 1 ? "asc" : "desc");
   });
 }
 
-async function main() {
-  const text = await (await fetch("tasks.csv")).text();
-  rows = parseCSV(text);
-  load();
+function main() {
+  rows = JSON.parse(document.getElementById("tasks-data").textContent);
+  const mdText = document.getElementById("usecases-data").textContent;
+  usecases = parseUsecases(mdText);
   fillSelect(document.getElementById("phase"), rows.map(r => r.phase));
   fillSelect(document.getElementById("backend"), rows.map(r => r.backend));
   render();
 }
 
 document.addEventListener("input", e => { if (e.target.matches("#q, select")) render(); });
+
 document.addEventListener("click", e => {
+  const ucLink = e.target.closest(".uc-open");
+  if (ucLink) { e.preventDefault(); e.stopPropagation(); openUsecase(ucLink.dataset.uc); return; }
+  if (e.target.id === "ucModalClose") { document.getElementById("ucModal").close(); return; }
+  if (e.target.id === "expandAll")    { document.querySelectorAll("details.uc").forEach(d => d.open = true); return; }
+  if (e.target.id === "collapseAll")  { document.querySelectorAll("details.uc").forEach(d => d.open = false); return; }
+
   const th = e.target.closest("th[data-k]");
   if (th) {
     if (sortK === th.dataset.k) sortDir *= -1; else { sortK = th.dataset.k; sortDir = 1; }
     render();
   }
-  const s = e.target.closest(".status");
-  if (s) {
-    const r = rows.find(r => r.id === s.dataset.id);
-    r.status = STATUSES[(STATUSES.indexOf(r.status) + 1) % STATUSES.length];
-    save();
-    render();
-  }
 });
 
-main().catch(err => {
-  document.body.insertAdjacentHTML("beforeend",
-    `<p style="color:#c00">Failed to load tasks.csv — serve this over http (e.g. <code>python3 -m http.server</code>), not file://.<br>${err}</p>`);
-});
+main();
 </script>

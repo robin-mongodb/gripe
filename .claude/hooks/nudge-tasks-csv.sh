@@ -10,9 +10,9 @@ file="$(printf '%s' "$payload" | jq -r '.tool_input.file_path // empty')"
 [ -z "$file" ] && exit 0
 
 case "$file" in
-  *.md|*/docs/*|*/tasks.csv|*/tasks.html|*/.claude/*|*/README*) exit 0 ;;
+  *.md|*/docs/*|*/tasks.html|*/.claude/*|*/README*) exit 0 ;;
   *_test.go|*.test.ts|*.test.tsx|*.spec.ts) exit 0 ;;
 esac
 
-echo "[reminder] tasks.csv may need updating for: $file"
+echo "[reminder] tasks list (in tasks.html) may need updating for: $file"
 echo "           run the tasks-csv-sync skill when the change is stable."

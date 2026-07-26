@@ -1,0 +1,167 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Gripe — Architecture</title>
+<style>
+  :root { color-scheme: light dark; --b:#8884; --muted:#888; --line:#94a3b8; --ec2:#3b82f622; --aws:#f59e0b22; --atlas:#10b98122; --sqs:#a855f722; }
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 2rem; max-width: 1200px; }
+  h1 { margin: 0 0 .25rem; }
+  .meta { color: var(--muted); margin-bottom: 1.2rem; }
+  .meta code { background: color-mix(in oklab, canvas 88%, transparent); padding: .05rem .3rem; border-radius: 3px; }
+  svg { width: 100%; height: auto; border: 1px solid var(--b); border-radius: 8px; background: canvas; }
+  .legend { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: 1rem; color: var(--muted); font-size: .9em; }
+  .legend span { display: inline-flex; align-items: center; gap: .35rem; }
+  .swatch { width: 12px; height: 12px; border-radius: 3px; border: 1px solid var(--b); display: inline-block; }
+  section.notes { margin-top: 1.5rem; }
+  section.notes h2 { font-size: 1.05rem; margin: 1rem 0 .3rem; }
+  section.notes ol, section.notes ul { margin: .3rem 0 .3rem 1.4rem; }
+  section.notes li { margin: .2rem 0; }
+</style>
+
+<h1>Gripe — Architecture</h1>
+<div class="meta">One EC2 host running the app via <code>docker-compose</code>. Aurora Postgres and MongoDB Atlas are managed. SQS fans out to two mock async workers to mix reads+updates against both DBs.</div>
+
+<svg viewBox="0 0 1180 660" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Gripe architecture">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--line)"/>
+    </marker>
+    <style>
+      .box { stroke: var(--b); stroke-width: 1; rx: 8; ry: 8; }
+      .grp { stroke: var(--b); stroke-width: 1; stroke-dasharray: 5 4; rx: 12; ry: 12; fill: transparent; }
+      text  { font: 13px system-ui, sans-serif; fill: currentColor; }
+      text.title { font-weight: 600; }
+      text.small { font-size: 11px; fill: var(--muted); }
+      .edge  { stroke: var(--line); stroke-width: 1.5; fill: none; marker-end: url(#arrow); }
+      .edge-dashed { stroke-dasharray: 4 4; }
+    </style>
+  </defs>
+
+  <!-- User -->
+  <g>
+    <circle cx="70" cy="90" r="18" class="box" fill="color-mix(in oklab, canvas 96%, transparent)"/>
+    <text x="70" y="94" text-anchor="middle">👤</text>
+    <text x="70" y="130" text-anchor="middle" class="title">User</text>
+    <text x="70" y="146" text-anchor="middle" class="small">admin · merchant · customer</text>
+  </g>
+
+  <!-- EC2 group -->
+  <rect x="170" y="30" width="600" height="360" class="grp" style="fill:var(--ec2)"/>
+  <text x="185" y="52" class="title">EC2 host — docker-compose</text>
+
+  <!-- nginx -->
+  <rect x="200" y="70" width="120" height="60" class="box" fill="color-mix(in oklab, canvas 88%, transparent)"/>
+  <text x="260" y="98" text-anchor="middle" class="title">nginx</text>
+  <text x="260" y="115" text-anchor="middle" class="small">/ → web  /v1/* → api</text>
+
+  <!-- web -->
+  <rect x="360" y="70" width="180" height="60" class="box" fill="color-mix(in oklab, canvas 88%, transparent)"/>
+  <text x="450" y="98" text-anchor="middle" class="title">web</text>
+  <text x="450" y="115" text-anchor="middle" class="small">Next.js (admin/merchant/checkout)</text>
+
+  <!-- api -->
+  <rect x="360" y="160" width="180" height="70" class="box" fill="color-mix(in oklab, canvas 88%, transparent)"/>
+  <text x="450" y="188" text-anchor="middle" class="title">api</text>
+  <text x="450" y="205" text-anchor="middle" class="small">Go HTTP · Store interface</text>
+  <text x="450" y="220" text-anchor="middle" class="small">idempotency · actor header</text>
+
+  <!-- workers -->
+  <rect x="200" y="270" width="160" height="80" class="box" fill="color-mix(in oklab, canvas 88%, transparent)"/>
+  <text x="280" y="298" text-anchor="middle" class="title">fraud-worker</text>
+  <text x="280" y="315" text-anchor="middle" class="small">reads payment, mocks</text>
+  <text x="280" y="330" text-anchor="middle" class="small">check → SettleFraudScore</text>
+
+  <rect x="580" y="270" width="170" height="80" class="box" fill="color-mix(in oklab, canvas 88%, transparent)"/>
+  <text x="665" y="298" text-anchor="middle" class="title">fee-worker</text>
+  <text x="665" y="315" text-anchor="middle" class="small">reads payment, picks</text>
+  <text x="665" y="330" text-anchor="middle" class="small">mock fee → SettleNetworkFee</text>
+
+  <!-- SQS -->
+  <rect x="410" y="270" width="140" height="80" class="box" fill="var(--sqs)"/>
+  <text x="480" y="298" text-anchor="middle" class="title">SQS</text>
+  <text x="480" y="315" text-anchor="middle" class="small">payment.created</text>
+  <text x="480" y="330" text-anchor="middle" class="small">(fanned to both)</text>
+
+  <!-- Aurora -->
+  <rect x="850" y="120" width="220" height="90" class="box" fill="var(--aws)"/>
+  <text x="960" y="150" text-anchor="middle" class="title">Aurora PostgreSQL</text>
+  <text x="960" y="170" text-anchor="middle" class="small">managed · writer + reader endpoints</text>
+  <text x="960" y="188" text-anchor="middle" class="small">numeric(19,4) · pgvector (parked)</text>
+
+  <!-- Atlas -->
+  <rect x="850" y="240" width="220" height="90" class="box" fill="var(--atlas)"/>
+  <text x="960" y="270" text-anchor="middle" class="title">MongoDB Atlas</text>
+  <text x="960" y="290" text-anchor="middle" class="small">managed · TLS</text>
+  <text x="960" y="308" text-anchor="middle" class="small">Decimal128 · Vector Search (parked)</text>
+
+  <!-- AWS group -->
+  <rect x="820" y="90" width="290" height="260" class="grp" style="fill:transparent"/>
+  <text x="835" y="112" class="title">Managed (AWS + Atlas)</text>
+
+  <!-- Edges -->
+  <!-- user -> nginx -->
+  <path class="edge" d="M92,90 L198,95"/>
+  <!-- nginx -> web / api -->
+  <path class="edge" d="M320,92 L358,92"/>
+  <path class="edge" d="M320,110 C340,110 340,185 358,185"/>
+  <!-- api -> Aurora -->
+  <path class="edge" d="M542,182 C700,182 720,155 848,155"/>
+  <!-- api -> Atlas -->
+  <path class="edge" d="M542,208 C700,208 720,275 848,275"/>
+  <!-- api -> SQS -->
+  <path class="edge" d="M450,232 L480,268"/>
+  <!-- SQS -> workers -->
+  <path class="edge" d="M410,310 L362,310"/>
+  <path class="edge" d="M550,310 L578,310"/>
+  <!-- workers -> DBs (both hit both — pick backend by config) -->
+  <path class="edge edge-dashed" d="M760,310 C820,300 820,180 848,175"/>
+  <path class="edge edge-dashed" d="M760,320 C820,320 820,285 848,285"/>
+  <path class="edge edge-dashed" d="M360,290 C560,240 720,180 848,168"/>
+  <path class="edge edge-dashed" d="M360,320 C560,340 720,300 848,295"/>
+
+  <!-- Numbered flow annotations -->
+  <g fill="#3b82f6" font-weight="600">
+    <text x="150" y="87">①</text>
+    <text x="342" y="88">②</text>
+    <text x="342" y="180">②</text>
+    <text x="620" y="180">③</text>
+    <text x="475" y="255">④</text>
+    <text x="390" y="303">⑤</text>
+    <text x="560" y="303">⑤</text>
+    <text x="800" y="245">⑥</text>
+  </g>
+
+  <!-- Legend key positioning line -->
+  <g transform="translate(30,420)">
+    <text class="title" x="0" y="0">Flow</text>
+    <text x="0" y="22">① user hits nginx</text>
+    <text x="0" y="42">② nginx routes to web (page) or api (JSON)</text>
+    <text x="0" y="62">③ api writes to the chosen backend (Aurora <em>or</em> Atlas, one at a time via config flag)</text>
+    <text x="0" y="82">④ api publishes {payment_id, ...} to SQS</text>
+    <text x="0" y="102">⑤ fraud-worker + fee-worker consume the same message; each reads the payment and does one conditional update</text>
+    <text x="0" y="122">⑥ workers hit whichever DB is configured — dashed lines show both options; only one is live at once</text>
+  </g>
+</svg>
+
+<div class="legend">
+  <span><i class="swatch" style="background:var(--ec2)"></i> EC2 (docker-compose)</span>
+  <span><i class="swatch" style="background:var(--sqs)"></i> SQS</span>
+  <span><i class="swatch" style="background:var(--aws)"></i> Aurora PostgreSQL</span>
+  <span><i class="swatch" style="background:var(--atlas)"></i> MongoDB Atlas</span>
+</div>
+
+<section class="notes">
+  <h2>Why this shape</h2>
+  <ul>
+    <li>Config flag picks Mongo <em>or</em> PG at boot — same code, one backend live at a time. Perf comparison runs the same scenario twice.</li>
+    <li>Workers are separate processes so the DB sees mixed load (read + update per payment), not just inserts.</li>
+    <li>SQS is backend-agnostic — both DBs get the same event pattern. Change Streams / <code>LISTEN/NOTIFY</code> are parked for the live-event-feed UI, not for worker triggering.</li>
+    <li>EC2 + compose over ECS/Fargate for v1: one host, one deploy, cheapest. Lift-and-shift to Fargate later without code changes.</li>
+  </ul>
+  <h2>What's parked</h2>
+  <ul>
+    <li>Fraud reasoning via LLM (v1 returns a score only).</li>
+    <li>AI chat, Atlas Vector Search, <code>pgvector</code>, fuzzy search, live event feed UI.</li>
+    <li>Move workers to Fargate.</li>
+    <li>Payouts, disputes, FX, real PSP integration.</li>
+  </ul>
+</section>

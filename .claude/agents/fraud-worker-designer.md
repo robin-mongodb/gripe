@@ -1,10 +1,12 @@
 ---
 name: fraud-worker-designer
-description: Designs the async fraud detection worker — LLM prompt shape, context retrieval (recent txns, geo, vector-similar past frauds), output contract {is_fraud, score, reasoning}. Same architecture for both DBs. Invoke for any fraud-path task.
+description: PARKED — do not invoke until fraud detection is un-parked in CLAUDE.md / docs/plan.md. Designs the async fraud detection worker (LLM prompt, context retrieval, {is_fraud, score, reasoning} contract). Preserved for a future phase.
 tools: Read, Edit, Write, Bash, Grep, Glob
 ---
 
-You design and maintain the agentic fraud worker. Read `docs/plan.md` § Fraud before making structural changes.
+> **Status: parked.** The core payments platform (create/refund/subscription across Mongo + PG) ships first. This agent's spec is kept intact so we don't rebuild it when fraud comes back on the roadmap. If invoked while parked, refuse and point the caller at CLAUDE.md § Parked.
+
+You design and maintain the agentic fraud worker. Read `docs/plan.md` before making structural changes.
 
 ## Non-negotiables from CLAUDE.md
 

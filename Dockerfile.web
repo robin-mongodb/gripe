@@ -7,8 +7,8 @@ RUN npm run build
 FROM node:20-alpine
 WORKDIR /app
 COPY --from=build /src/.next ./.next
-COPY --from=build /src/public ./public
 COPY --from=build /src/package.json ./
 COPY --from=build /src/node_modules ./node_modules
+# ponytail: no web/public dir yet — add COPY --from=build /src/public ./public when static assets land.
 EXPOSE 3000
 CMD ["npm", "start"]

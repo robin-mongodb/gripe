@@ -1,0 +1,11 @@
+FROM golang:1.23-alpine AS build
+WORKDIR /src
+COPY go.mod ./
+RUN go mod download || true
+COPY . .
+RUN CGO_ENABLED=0 go build -o /out/fee-worker ./cmd/fee-worker
+
+FROM gcr.io/distroless/static:nonroot
+COPY --from=build /out/fee-worker /fee-worker
+USER nonroot:nonroot
+ENTRYPOINT ["/fee-worker"]

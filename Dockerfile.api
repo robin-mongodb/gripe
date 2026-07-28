@@ -1,0 +1,13 @@
+# ponytail: one Dockerfile per Go binary — same base, different ENTRYPOINT. Merge if we ever add a real difference.
+FROM golang:1.23-alpine AS build
+WORKDIR /src
+COPY go.mod ./
+RUN go mod download || true
+COPY . .
+RUN CGO_ENABLED=0 go build -o /out/api ./cmd/api
+
+FROM gcr.io/distroless/static:nonroot
+COPY --from=build /out/api /api
+USER nonroot:nonroot
+EXPOSE 8080
+ENTRYPOINT ["/api"]

@@ -18,7 +18,7 @@
 </style>
 
 <h1>Gripe — Architecture</h1>
-<div class="meta">One EC2 host running the app via <code>docker-compose</code>. Aurora Postgres and MongoDB Atlas are managed. SQS fans out to two mock async workers to mix reads+updates against both DBs.</div>
+<div class="meta">One EC2 host running the app via <code>docker-compose</code>. RDS PostgreSQL and MongoDB Atlas are managed. SQS fans out to two mock async workers to mix reads+updates against both DBs.</div>
 
 <svg viewBox="0 0 1180 660" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Gripe architecture">
   <defs>
@@ -81,10 +81,10 @@
   <text x="480" y="315" text-anchor="middle" class="small">payment.created</text>
   <text x="480" y="330" text-anchor="middle" class="small">(fanned to both)</text>
 
-  <!-- Aurora -->
+  <!-- RDS PG -->
   <rect x="850" y="120" width="220" height="90" class="box" fill="var(--aws)"/>
-  <text x="960" y="150" text-anchor="middle" class="title">Aurora PostgreSQL</text>
-  <text x="960" y="170" text-anchor="middle" class="small">managed · writer + reader endpoints</text>
+  <text x="960" y="150" text-anchor="middle" class="title">RDS PostgreSQL</text>
+  <text x="960" y="170" text-anchor="middle" class="small">managed · single instance · SSL</text>
   <text x="960" y="188" text-anchor="middle" class="small">numeric(19,4) · pgvector (parked)</text>
 
   <!-- Atlas -->
@@ -103,7 +103,7 @@
   <!-- nginx -> web / api -->
   <path class="edge" d="M320,92 L358,92"/>
   <path class="edge" d="M320,110 C340,110 340,185 358,185"/>
-  <!-- api -> Aurora -->
+  <!-- api -> RDS PG -->
   <path class="edge" d="M542,182 C700,182 720,155 848,155"/>
   <!-- api -> Atlas -->
   <path class="edge" d="M542,208 C700,208 720,275 848,275"/>
@@ -135,7 +135,7 @@
     <text class="title" x="0" y="0">Flow</text>
     <text x="0" y="22">① user hits nginx</text>
     <text x="0" y="42">② nginx routes to web (page) or api (JSON)</text>
-    <text x="0" y="62">③ api writes to the chosen backend (Aurora <em>or</em> Atlas, one at a time via config flag)</text>
+    <text x="0" y="62">③ api writes to the chosen backend (RDS PG <em>or</em> Atlas, one at a time via config flag)</text>
     <text x="0" y="82">④ api publishes {payment_id, ...} to SQS</text>
     <text x="0" y="102">⑤ fraud-worker + fee-worker consume the same message; each reads the payment and does one conditional update</text>
     <text x="0" y="122">⑥ workers hit whichever DB is configured — dashed lines show both options; only one is live at once</text>
@@ -145,7 +145,7 @@
 <div class="legend">
   <span><i class="swatch" style="background:var(--ec2)"></i> EC2 (docker-compose)</span>
   <span><i class="swatch" style="background:var(--sqs)"></i> SQS</span>
-  <span><i class="swatch" style="background:var(--aws)"></i> Aurora PostgreSQL</span>
+  <span><i class="swatch" style="background:var(--aws)"></i> RDS PostgreSQL</span>
   <span><i class="swatch" style="background:var(--atlas)"></i> MongoDB Atlas</span>
 </div>
 

@@ -21,14 +21,14 @@ Deploy target for workers may move to Fargate later — `docker-compose` for v1,
 ## Managed services
 
 - **MongoDB Atlas** — the Mongo `Store` impl talks to Atlas over the internet from EC2. `mongodb-atlas-local` used only in testcontainers (contract tests).
-- **Aurora Postgres** — the PG `Store` impl targets Aurora. Vanilla PG used only in testcontainers.
+- **RDS PostgreSQL** — the PG `Store` impl targets a plain RDS PostgreSQL instance (single-AZ, `db.t4g.micro`). Not Aurora. Vanilla PG used only in testcontainers. Provisioned by `deploy/terraform/rds.tf`.
 - **Amazon SQS** — one standard queue per event type. Currently: `payment.created`. Fanned to fraud-worker + fee-worker via two subscriptions (or SNS → 2 SQS; TBD when we wire it).
 
 Neither backend runs on the EC2 host — DB load hits AWS/Atlas over the network, which is the load-comparison story.
 
 ## Data flow
 
-1. **Create payment.** Client → `nginx` → `api` → `Store.CreatePayment(ctx, input, idempotencyKey)` → Aurora or Atlas.
+1. **Create payment.** Client → `nginx` → `api` → `Store.CreatePayment(ctx, input, idempotencyKey)` → RDS PostgreSQL or Atlas.
 2. **Publish event.** `api` writes a small `{payment_id, merchant_id, currency, amount}` message to SQS on the write path (best-effort; failure is logged, retry via a small outbox check later if needed).
 3. **Async fraud.** `fraud-worker` receives message → `Store.GetPayment` (read) → simulates check → `Store.SettleFraudScore(paymentID, score)` (conditional update on `fraud_score IS NULL`).
 4. **Async network fee.** `fee-worker` receives the same message → `Store.GetPayment` → picks a mock fee → `Store.SettleNetworkFee(paymentID, fee)` (conditional update on `network_fee IS NULL`).

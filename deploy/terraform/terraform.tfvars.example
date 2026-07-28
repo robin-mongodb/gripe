@@ -1,0 +1,28 @@
+# Copy this file to `terraform.tfvars` and fill in the values.
+# terraform.tfvars is gitignored so secrets don't leak.
+
+aws_region = "eu-west-1"
+
+# Paste your SSH public key so you can `ssh ec2-user@<ip>` after apply.
+# Get it with: cat ~/.ssh/id_ed25519.pub    (or id_rsa.pub)
+ssh_pubkey = "ssh-ed25519 AAAA... you@laptop"
+
+# Your public IP. Get it with: curl ifconfig.me
+# Include the /32 suffix — this is CIDR, not a bare IP.
+allowed_ssh_cidr = "203.0.113.5/32"
+
+# RDS master password. Make it long and don't reuse elsewhere.
+pg_password = "change-me-something-long"
+
+# RDS instance class. Default (in variables.tf) is db.t4g.micro (~$12/mo, 1 GB) — enough
+# for functional parity while we're building. For the perf comparison against Atlas M30
+# (8 GB), uncomment the line below to swap to db.m6g.large (~$125/mo). Apply again;
+# RDS does an in-place resize with brief downtime.
+# pg_instance_class = "db.m6g.large"
+
+# Atlas connection string (you own this cluster; Terraform doesn't create it).
+# Any other secrets the app needs can go in here too.
+app_env = {
+  MONGO_URI = "mongodb+srv://user:pass@cluster.mongodb.net/?retryWrites=true&w=majority"
+  MONGO_DB  = "gripe"
+}

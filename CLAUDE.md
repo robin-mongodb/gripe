@@ -2,7 +2,7 @@
 
 ## Project overview
 
-**Gripe** is a Stripe-shaped payments platform built as a two-week SA challenge. Core: a payment processing engine that (mock-)accepts payments across methods (card, direct debit, bank transfer, Apple/Google Pay), issues refunds, and runs subscriptions — built twice, once on **MongoDB**, once on **PostgreSQL (Aurora in prod, vanilla PG in tests)** — then load-tested for a customer-facing perf comparison.
+**Gripe** is a Stripe-shaped payments platform built as a two-week SA challenge. Core: a payment processing engine that (mock-)accepts payments across methods (card, direct debit, bank transfer, Apple/Google Pay), issues refunds, and runs subscriptions — built twice, once on **MongoDB**, once on **PostgreSQL (RDS PostgreSQL in prod, vanilla PG in tests)** — then load-tested for a customer-facing perf comparison.
 
 Full context is in `docs/plan.md`; treat it as the source of truth and read it before proposing structural changes. Deployed shape lives in `architecture.md` (visual mirror: `architecture.html`) — read that before proposing infra changes or new services.
 
@@ -21,7 +21,7 @@ Three surfaces on top of the same backend:
 - **Idempotency is a first-class concern.** Payment + refund endpoints accept an `Idempotency-Key`; the store rejects duplicates or returns the original result. Same contract on both backends.
 - **Contract tests run against both backends** (via testcontainers). A feature isn't done until both are green.
 - **Auth is skipped** — hardcoded actor context (admin / merchant ID / customer ID) in a header. Don't build auth.
-- **Stack:** Go (api + fraud-worker + fee-worker sharing one module), Next.js App Router + Tailwind. Deploys as docker-compose on one EC2 (`nginx`, `web`, `api`, `fraud-worker`, `fee-worker`). **Aurora Postgres and MongoDB Atlas are managed** — no local DB containers in prod; testcontainers only for tests. **SQS** fans `payment.created` to both workers.
+- **Stack:** Go (api + fraud-worker + fee-worker sharing one module), Next.js App Router + Tailwind. Deploys as docker-compose on one EC2 (`nginx`, `web`, `api`, `fraud-worker`, `fee-worker`). **RDS PostgreSQL and MongoDB Atlas are managed** — no local DB containers in prod; testcontainers only for tests. **SQS** fans `payment.created` to both workers.
 
 ## Parked (future scope)
 

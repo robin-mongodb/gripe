@@ -93,7 +93,7 @@
 
 <script id="tasks-data" type="application/json">
 [
-  { "id": "1",  "usecase": "-",     "phase": "Skeleton",          "title": "Init repo + docker-compose (nginx/web/api/fraud-worker/fee-worker) — Aurora + Atlas managed", "backend": "both",     "status": "done", "paths": "docker-compose.yml, Dockerfile.api, Dockerfile.fraud-worker, Dockerfile.fee-worker, Dockerfile.web, deploy/nginx/nginx.conf, .env.example, .gitignore, go.mod" },
+  { "id": "1",  "usecase": "-",     "phase": "Skeleton",          "title": "Init repo + docker-compose (nginx/web/api/fraud-worker/fee-worker) — RDS PG + Atlas managed", "backend": "both",     "status": "done", "paths": "docker-compose.yml, Dockerfile.api, Dockerfile.fraud-worker, Dockerfile.fee-worker, Dockerfile.web, deploy/nginx/nginx.conf, .env.example, .gitignore, go.mod" },
   { "id": "2",  "usecase": "-",     "phase": "Skeleton",          "title": "Next.js App Router shell + Tailwind + three surface routes (admin/merchant/checkout)", "backend": "common",   "status": "done", "paths": "web/app/, web/app/layout.tsx, web/app/page.tsx, web/app/admin/page.tsx, web/app/merchant/page.tsx, web/app/checkout/page.tsx, web/tailwind.config.ts, web/next.config.mjs, web/package.json" },
   { "id": "3",  "usecase": "-",     "phase": "Skeleton",          "title": "Define use-case-shaped Store interface + domain DTOs (Payment/Refund/Subscription/Balance, Actor, Filters/Page/Cursor)", "backend": "common", "status": "done", "paths": "internal/store/store.go, internal/domain/domain.go, internal/domain/domain_test.go" },
   { "id": "4",  "usecase": "-",     "phase": "Skeleton",          "title": "Go HTTP service scaffold + GRIPE_BACKEND config flag + /healthz + worker stubs", "backend": "common",   "status": "done", "paths": "cmd/api/main.go, cmd/fraud-worker/main.go, cmd/fee-worker/main.go, internal/api/server.go, internal/config/config.go, internal/config/config_test.go" },
@@ -119,13 +119,13 @@
   { "id": "24", "usecase": "UC-6",  "phase": "Mongo build",       "title": "Employee console: list all payments across merchants + admin-only filters", "backend": "common", "status": "todo", "paths": "" },
   { "id": "25", "usecase": "UC-6",  "phase": "Mongo build",       "title": "Employee console: cross-merchant aggregate (volume per merchant per day)", "backend": "mongo", "status": "todo", "paths": "" },
   { "id": "26", "usecase": "-",     "phase": "Mongo build",       "title": "Contract tests via testcontainers (Mongo green for all UC-1..UC-9)", "backend": "common", "status": "todo", "paths": "" },
-  { "id": "27", "usecase": "-",     "phase": "Postgres port",     "title": "PG schema + migrations (goose or golang-migrate) — Aurora-compatible SQL only", "backend": "postgres", "status": "todo", "paths": "" },
+  { "id": "27", "usecase": "-",     "phase": "Postgres port",     "title": "PG schema + migrations (goose or golang-migrate) — targets RDS PostgreSQL", "backend": "postgres", "status": "todo", "paths": "" },
   { "id": "28", "usecase": "-",     "phase": "Postgres port",     "title": "Money math: numeric(19,4) for amounts", "backend": "postgres", "status": "todo", "paths": "" },
   { "id": "29", "usecase": "UC-2",  "phase": "Postgres port",     "title": "PG unique index on idempotency_key + expiry", "backend": "postgres", "status": "todo", "paths": "" },
   { "id": "30", "usecase": "-",     "phase": "Postgres port",     "title": "PG composite indexes (merchant_id + created_at + status)", "backend": "postgres", "status": "todo", "paths": "" },
   { "id": "31", "usecase": "UC-6",  "phase": "Postgres port",     "title": "PG cross-merchant aggregate via SQL/CTE", "backend": "postgres", "status": "todo", "paths": "" },
   { "id": "32", "usecase": "-",     "phase": "Postgres port",     "title": "Contract tests green against PG for all UC-1..UC-9", "backend": "common", "status": "todo", "paths": "" },
-  { "id": "33", "usecase": "-",     "phase": "Postgres port",     "title": "Verify Aurora compatibility (no vendor-specific SQL) — run migrations on Aurora if available", "backend": "postgres", "status": "todo", "paths": "" },
+  { "id": "33", "usecase": "-",     "phase": "Postgres port",     "title": "Run migrations against the Terraform-provisioned RDS PostgreSQL instance and verify Store contract", "backend": "postgres", "status": "todo", "paths": "" },
   { "id": "34", "usecase": "UC-10", "phase": "Customer checkout", "title": "Checkout page: pick method + submit payment", "backend": "common", "status": "todo", "paths": "" },
   { "id": "35", "usecase": "UC-10", "phase": "Customer checkout", "title": "Success + failure pages", "backend": "common", "status": "todo", "paths": "" },
   { "id": "36", "usecase": "UC-10", "phase": "Customer checkout", "title": "Wire all five mock methods end-to-end from checkout", "backend": "common", "status": "todo", "paths": "" },
@@ -134,7 +134,7 @@
   { "id": "39", "usecase": "-",     "phase": "Perf",              "title": "Decide seed data volume + run seed on demo box", "backend": "common", "status": "todo", "paths": "" },
   { "id": "40", "usecase": "-",     "phase": "Perf",              "title": "Run scenarios against Mongo; capture p50/p95/p99", "backend": "mongo", "status": "todo", "paths": "" },
   { "id": "41", "usecase": "-",     "phase": "Perf",              "title": "Run scenarios against PG; capture p50/p95/p99", "backend": "postgres", "status": "todo", "paths": "" },
-  { "id": "42", "usecase": "-",     "phase": "Perf",              "title": "Tune indexes/queries on M50-equivalent + Aurora-equivalent", "backend": "both", "status": "todo", "paths": "" },
+  { "id": "42", "usecase": "-",     "phase": "Perf",              "title": "Tune indexes/queries on Atlas M50-equivalent + a right-sized RDS PG instance", "backend": "both", "status": "todo", "paths": "" },
   { "id": "43", "usecase": "-",     "phase": "Perf",              "title": "Comparison report with graphs", "backend": "common", "status": "todo", "paths": "" },
   { "id": "44", "usecase": "-",     "phase": "Buffer + demo",     "title": "nginx routing / -> web + /v1/* -> api", "backend": "common", "status": "todo", "paths": "" },
   { "id": "45", "usecase": "-",     "phase": "Buffer + demo",     "title": "README with run instructions + feature callouts", "backend": "common", "status": "todo", "paths": "" },
@@ -160,7 +160,10 @@
   { "id": "65", "usecase": "UC-12", "phase": "Postgres port",     "title": "PG fee_ledger per currency", "backend": "postgres", "status": "todo", "paths": "" },
   { "id": "66", "usecase": "UC-12", "phase": "Postgres port",     "title": "Contract tests for multi-currency green against PG", "backend": "common", "status": "todo", "paths": "" },
   { "id": "67", "usecase": "UC-12", "phase": "Mongo build",       "title": "Merchant dashboard: one balance row per currency with activity", "backend": "common", "status": "todo", "paths": "" },
-  { "id": "68", "usecase": "UC-12", "phase": "Mongo build",       "title": "Employee console: Gripe revenue split by currency", "backend": "common", "status": "todo", "paths": "" }
+  { "id": "68", "usecase": "UC-12", "phase": "Mongo build",       "title": "Employee console: Gripe revenue split by currency", "backend": "common", "status": "todo", "paths": "" },
+  { "id": "69", "usecase": "-",     "phase": "Skeleton",          "title": "Terraform: EC2 + SG + IAM + user-data (git clone + docker compose up on first boot)", "backend": "-",        "status": "done", "paths": "deploy/terraform/ec2.tf, deploy/terraform/network.tf, deploy/terraform/user-data.sh, deploy/terraform/variables.tf, deploy/terraform/providers.tf, deploy/terraform/versions.tf, deploy/terraform/outputs.tf, deploy/terraform/README.md, deploy/terraform/terraform.tfvars.example, .gitignore" },
+  { "id": "70", "usecase": "-",     "phase": "Skeleton",          "title": "Terraform: RDS PostgreSQL 16 (single-AZ, db.t4g.micro) + private SG",                                     "backend": "postgres", "status": "done", "paths": "deploy/terraform/rds.tf, deploy/terraform/network.tf" },
+  { "id": "71", "usecase": "-",     "phase": "Skeleton",          "title": "Terraform: SQS queues (payment-created / fraud / fee) + EC2 IAM role scoped to them",                    "backend": "-",        "status": "done", "paths": "deploy/terraform/sqs.tf, deploy/terraform/ec2.tf" }
 ]
 </script>
 

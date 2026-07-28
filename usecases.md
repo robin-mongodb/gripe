@@ -1,6 +1,6 @@
 # Gripe — Use cases
 
-Scope: a **payments processing platform** built on both MongoDB and PostgreSQL (Aurora in prod). Three personas — Gripe employee (admin), merchant, customer — on top of the same backend. Each use case must work identically against both backends (contract tested) and map to rows in `tasks.csv`.
+Scope: a **payments processing platform** built on both MongoDB and PostgreSQL (RDS PostgreSQL in prod). Three personas — Gripe employee (admin), merchant, customer — on top of the same backend. Each use case must work identically against both backends (contract tested) and map to rows in `tasks.html`.
 
 Fraud detection, AI chat, and vector search are **parked** — see CLAUDE.md and `docs/plan.md`.
 

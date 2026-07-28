@@ -2,7 +2,7 @@
 
 ## Context
 
-Two-week challenge to build the same payments platform twice — once on MongoDB, once on PostgreSQL (Aurora in prod, vanilla PG in tests) — then load-test both. Goal: a live demo that processes payments end-to-end on either backend, plus a perf report that stands up in a customer conversation.
+Two-week challenge to build the same payments platform twice — once on MongoDB, once on PostgreSQL (RDS PostgreSQL in prod, vanilla PG in tests) — then load-test both. Goal: a live demo that processes payments end-to-end on either backend, plus a perf report that stands up in a customer conversation.
 
 Fraud detection, AI chat, and vector search are **parked** — reintroduced once the core payment flows are green.
 
@@ -28,7 +28,7 @@ Auth is skipped — actor identity is a header (`X-Actor-Role`, `X-Actor-Id`).
 | 4   | Auth                  | **Skipped.** Actor in header (`X-Actor-Role: admin\|merchant\|customer`, `X-Actor-Id: <id>`).                                                                                              |
 | 5   | Backend language      | **Go.** Single HTTP service + background worker (subscription cycler) sharing a Go module.                                                                                                 |
 | 6   | Frontend              | **Next.js (App Router) + Tailwind.** Three surfaces: Gripe employee console, merchant dashboard, customer checkout (checkout is last).                                                     |
-| 7   | Deploy target         | **Single EC2 + docker-compose.** Containers: `web`, `api`, `worker`, `postgres`. MongoDB on Atlas (separate). Prod PG would be **Aurora**; local/tests use vanilla PG (identical SQL).     |
+| 7   | Deploy target         | **Single EC2 + docker-compose.** Containers: `nginx`, `web`, `api`, `fraud-worker`, `fee-worker`. MongoDB on Atlas (user-owned). Postgres is **RDS PostgreSQL** (the plain engine, not Aurora); tests use vanilla PG via testcontainers.                                              |
 | 8   | Repo shape            | **Single repo, swappable `Store` interface.** Two implementations: `store/mongo` and `store/postgres`. Config flag picks one at boot.                                                      |
 | 9   | Idempotency           | `Idempotency-Key` header on payment + refund creates. Store persists the key → response mapping; duplicates return the original response.                                                  |
 | 9a  | Gripe fee             | **3% flat on every payment**, applied on settlement. Merchant balance is credited `amount − fee`. On refund, balance is debited `refund_amount − refund_fee` (fee not returned to merchant). |
@@ -55,7 +55,7 @@ Auth is skipped — actor identity is a header (`X-Actor-Role`, `X-Actor-Id`).
 
 ### Per-DB code (write twice)
 
-| Concern              | MongoDB                                     | PostgreSQL (Aurora-compatible)                          |
+| Concern              | MongoDB                                     | PostgreSQL (RDS PG-compatible)                          |
 | -------------------- | ------------------------------------------- | ------------------------------------------------------- |
 | Schema               | Collections + documents                     | Tables + migrations (`goose` / `golang-migrate`)        |
 | Idempotency store    | Unique index on `idempotency_key`           | Unique index on `idempotency_key`                       |
@@ -89,7 +89,7 @@ No `Find(collection, filter)` or `Query(sql, args)`.
 | ------------------ | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Skeleton           | 1–2        | Repo, docker-compose, Next.js shell, `Store` interface, `CreatePayment` + `GetPayment` against Mongo. Idempotency middleware.                                   |
 | Mongo build        | 3–6        | All payment methods (mocked), refunds, subscriptions, cycler worker, merchant dashboard, admin console. Contract tests green.                                   |
-| Postgres port      | 7–10       | PG schema + migrations, PG `Store` impl, same contract tests green. Aurora compatibility verified against a real Aurora instance if available; else vanilla PG. |
+| Postgres port      | 7–10       | PG schema + migrations, PG `Store` impl, same contract tests green. RDS PostgreSQL is the deploy target; migrations run identically against vanilla PG in testcontainers. |
 | Customer checkout  | 11         | Customer-facing pay surface. Same three payment method options end-to-end.                                                                                       |
 | Perf               | 12–13      | Load tool of choice; scenarios covering create + list + refund. Run against both. Tune indexes. Comparison report.                                              |
 | Buffer + demo      | 14         | README, demo script, TFW talking points.                                                                                                                        |

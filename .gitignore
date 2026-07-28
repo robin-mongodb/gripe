@@ -7,3 +7,13 @@ web/.next/
 web/out/
 /bin/
 *.log
+
+# Terraform — local state and tfvars must never be committed.
+deploy/terraform/.terraform/
+deploy/terraform/.terraform.lock.hcl
+deploy/terraform/*.tfstate
+deploy/terraform/*.tfstate.*
+deploy/terraform/terraform.tfvars
+deploy/terraform/*.auto.tfvars
+crash.log
+crash.*.log

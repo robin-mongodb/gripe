@@ -43,20 +43,23 @@ func (s *Server) routes() {
 	}
 
 	// Reads
+	s.mux.Handle("GET /v1/payments", actorMiddleware(http.HandlerFunc(s.listPayments)))
 	s.mux.Handle("GET /v1/payments/{id}", actorMiddleware(http.HandlerFunc(s.getPayment)))
 
 	// Writes: idempotency is only useful when the store can persist it.
 	if idem != nil {
 		s.mux.Handle("POST /v1/payments",
 			actorMiddleware(idempotencyMiddleware(idem, idempotencyTTL, http.HandlerFunc(s.createPayment))))
+		s.mux.Handle("POST /v1/payments/{id}/capture",
+			actorMiddleware(idempotencyMiddleware(idem, idempotencyTTL, http.HandlerFunc(s.capturePayment))))
 		s.mux.Handle("POST /v1/payments/{id}/refunds",
 			actorMiddleware(idempotencyMiddleware(idem, idempotencyTTL, http.HandlerFunc(s.refundPayment))))
 	} else {
-		// Boot-time fallback so /v1/payments 503s gracefully instead of panicking.
 		unavail := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "store not configured"})
 		})
 		s.mux.Handle("POST /v1/payments", actorMiddleware(unavail))
+		s.mux.Handle("POST /v1/payments/{id}/capture", actorMiddleware(unavail))
 		s.mux.Handle("POST /v1/payments/{id}/refunds", actorMiddleware(unavail))
 	}
 }

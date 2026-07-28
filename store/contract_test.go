@@ -6,6 +6,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/robin-mongodb/gripe/internal/domain"
@@ -54,6 +55,81 @@ func RunStoreContract(t *testing.T, s store.Store) {
 		}
 		if p.Status != domain.StatusDeclined {
 			t.Fatalf("status = %s, want declined", p.Status)
+		}
+	})
+
+	// Tasks 13/14/15: initial state per method. "Settle later" halves for direct debit
+	// and bank transfer are deferred to task 51 (SettlePayment) — we only assert the
+	// state a fresh CreatePayment lands in.
+	t.Run("CreatePayment_apple_pay_captured_and_decline", func(t *testing.T) {
+		cases := []struct {
+			amt  int64
+			want domain.PaymentStatus
+		}{
+			{5000, domain.StatusCaptured},
+			{5013, domain.StatusDeclined},
+		}
+		for i, c := range cases {
+			p, err := s.CreatePayment(ctx, domain.CreatePaymentInput{
+				MerchantID: "mer_acme", CustomerID: "cus_1",
+				AmountMinor: c.amt, Currency: domain.EUR, Method: domain.MethodApplePay,
+			}, fmt.Sprintf("idem-ap-%d", i))
+			if err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			if p.Status != c.want {
+				t.Fatalf("amt=%d status=%s want=%s", c.amt, p.Status, c.want)
+			}
+		}
+	})
+
+	t.Run("CreatePayment_google_pay_captured_and_decline", func(t *testing.T) {
+		cases := []struct {
+			amt  int64
+			want domain.PaymentStatus
+		}{
+			{5000, domain.StatusCaptured},
+			{5013, domain.StatusDeclined},
+		}
+		for i, c := range cases {
+			p, err := s.CreatePayment(ctx, domain.CreatePaymentInput{
+				MerchantID: "mer_acme", CustomerID: "cus_1",
+				AmountMinor: c.amt, Currency: domain.USD, Method: domain.MethodGooglePay,
+			}, fmt.Sprintf("idem-gp-%d", i))
+			if err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			if p.Status != c.want {
+				t.Fatalf("amt=%d status=%s want=%s", c.amt, p.Status, c.want)
+			}
+		}
+	})
+
+	t.Run("CreatePayment_direct_debit_lands_authorized", func(t *testing.T) {
+		// Direct debit: no .13 decline (bank rails don't work like cards). Cycler settles later.
+		p, err := s.CreatePayment(ctx, domain.CreatePaymentInput{
+			MerchantID: "mer_acme", CustomerID: "cus_1",
+			AmountMinor: 5013, Currency: domain.GBP, Method: domain.MethodDirectDebit,
+		}, "idem-dd-1")
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if p.Status != domain.StatusAuthorized {
+			t.Fatalf("status = %s, want authorized", p.Status)
+		}
+	})
+
+	t.Run("CreatePayment_bank_transfer_lands_pending", func(t *testing.T) {
+		// Bank transfer: pending until an async "settled" event lands (deferred).
+		p, err := s.CreatePayment(ctx, domain.CreatePaymentInput{
+			MerchantID: "mer_acme", CustomerID: "cus_1",
+			AmountMinor: 5013, Currency: domain.USD, Method: domain.MethodBankTransfer,
+		}, "idem-bt-1")
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if p.Status != domain.StatusPending {
+			t.Fatalf("status = %s, want pending", p.Status)
 		}
 	})
 
@@ -120,6 +196,59 @@ func RunStoreContract(t *testing.T, s store.Store) {
 
 	t.Run("GetPayment_missing_returns_ErrNotFound", func(t *testing.T) {
 		_, err := s.GetPayment(ctx, "pay_does_not_exist", domain.Actor{Role: domain.RoleAdmin, ID: "gripe_ops"})
+		if !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("want ErrNotFound, got %v", err)
+		}
+	})
+
+	// Task 16 (UC-3): CapturePayment. Legal only from authorized -> captured.
+	t.Run("CapturePayment_direct_debit_authorized_to_captured", func(t *testing.T) {
+		p, err := s.CreatePayment(ctx, domain.CreatePaymentInput{
+			MerchantID: "mer_C", CustomerID: "cus_c", AmountMinor: 2500, Currency: domain.GBP, Method: domain.MethodDirectDebit,
+		}, "idem-cap-1")
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if p.Status != domain.StatusAuthorized {
+			t.Fatalf("precondition failed: status = %s", p.Status)
+		}
+		captured, err := s.CapturePayment(ctx, p.ID)
+		if err != nil {
+			t.Fatalf("capture: %v", err)
+		}
+		if captured.Status != domain.StatusCaptured {
+			t.Fatalf("status = %s, want captured", captured.Status)
+		}
+	})
+
+	t.Run("CapturePayment_rejects_already_captured", func(t *testing.T) {
+		p, err := s.CreatePayment(ctx, domain.CreatePaymentInput{
+			MerchantID: "mer_C", CustomerID: "cus_c", AmountMinor: 100, Currency: domain.USD, Method: domain.MethodCard,
+		}, "idem-cap-2")
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		_, err = s.CapturePayment(ctx, p.ID)
+		if !errors.Is(err, store.ErrInvalidState) {
+			t.Fatalf("want ErrInvalidState on already-captured, got %v", err)
+		}
+	})
+
+	t.Run("CapturePayment_rejects_declined", func(t *testing.T) {
+		p, err := s.CreatePayment(ctx, domain.CreatePaymentInput{
+			MerchantID: "mer_C", CustomerID: "cus_c", AmountMinor: 5013, Currency: domain.GBP, Method: domain.MethodCard,
+		}, "idem-cap-3")
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		_, err = s.CapturePayment(ctx, p.ID)
+		if !errors.Is(err, store.ErrInvalidState) {
+			t.Fatalf("want ErrInvalidState on declined, got %v", err)
+		}
+	})
+
+	t.Run("CapturePayment_missing_returns_ErrNotFound", func(t *testing.T) {
+		_, err := s.CapturePayment(ctx, "pay_nope")
 		if !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("want ErrNotFound, got %v", err)
 		}
@@ -203,6 +332,112 @@ func RunStoreContract(t *testing.T, s store.Store) {
 		_, err := s.RefundPayment(ctx, "pay_nope", 100, "idem-r11")
 		if !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("want ErrNotFound, got %v", err)
+		}
+	})
+
+	// Task 22 (UC-5): ListMerchantPayments — merchant scoping + filters + cursor.
+	t.Run("ListMerchantPayments_scoped_to_merchant", func(t *testing.T) {
+		// Create 3 payments for mer_L and 2 for mer_M.
+		for i := 0; i < 3; i++ {
+			_, err := s.CreatePayment(ctx, domain.CreatePaymentInput{
+				MerchantID: "mer_L", CustomerID: "cus_l", AmountMinor: 100, Currency: domain.GBP, Method: domain.MethodCard,
+			}, fmt.Sprintf("idem-l-%d", i))
+			if err != nil {
+				t.Fatalf("create L%d: %v", i, err)
+			}
+		}
+		for i := 0; i < 2; i++ {
+			_, err := s.CreatePayment(ctx, domain.CreatePaymentInput{
+				MerchantID: "mer_M", CustomerID: "cus_m", AmountMinor: 100, Currency: domain.GBP, Method: domain.MethodCard,
+			}, fmt.Sprintf("idem-m-%d", i))
+			if err != nil {
+				t.Fatalf("create M%d: %v", i, err)
+			}
+		}
+		page, err := s.ListMerchantPayments(ctx, "mer_L", domain.Filters{}, "")
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		for _, p := range page.Items {
+			if p.MerchantID != "mer_L" {
+				t.Fatalf("leaked merchant: %s", p.MerchantID)
+			}
+		}
+		// At least 3 for mer_L; may be more if earlier subtests created mer_L payments.
+		if len(page.Items) < 3 {
+			t.Fatalf("want >=3 items for mer_L, got %d", len(page.Items))
+		}
+	})
+
+	t.Run("ListMerchantPayments_status_filter", func(t *testing.T) {
+		// One declined + one captured for mer_F.
+		_, _ = s.CreatePayment(ctx, domain.CreatePaymentInput{
+			MerchantID: "mer_F", CustomerID: "cus_f", AmountMinor: 5013, Currency: domain.GBP, Method: domain.MethodCard,
+		}, "idem-f-decline")
+		_, _ = s.CreatePayment(ctx, domain.CreatePaymentInput{
+			MerchantID: "mer_F", CustomerID: "cus_f", AmountMinor: 5000, Currency: domain.GBP, Method: domain.MethodCard,
+		}, "idem-f-cap")
+		page, err := s.ListMerchantPayments(ctx, "mer_F", domain.Filters{Status: domain.StatusDeclined}, "")
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		if len(page.Items) != 1 {
+			t.Fatalf("want 1 declined, got %d", len(page.Items))
+		}
+		if page.Items[0].Status != domain.StatusDeclined {
+			t.Fatalf("status filter failed: %s", page.Items[0].Status)
+		}
+	})
+
+	t.Run("ListMerchantPayments_cursor_paginates", func(t *testing.T) {
+		// listPageMax is 50 for both backends by contract; insert enough to overflow.
+		const overCap = 51
+		for i := 0; i < overCap; i++ {
+			_, err := s.CreatePayment(ctx, domain.CreatePaymentInput{
+				MerchantID: "mer_P", CustomerID: "cus_p", AmountMinor: 100, Currency: domain.GBP, Method: domain.MethodCard,
+			}, fmt.Sprintf("idem-p-%d", i))
+			if err != nil {
+				t.Fatalf("create P%d: %v", i, err)
+			}
+		}
+		page1, err := s.ListMerchantPayments(ctx, "mer_P", domain.Filters{}, "")
+		if err != nil {
+			t.Fatalf("page1: %v", err)
+		}
+		if page1.NextCursor == "" {
+			t.Fatal("want a cursor when more results exist")
+		}
+		page2, err := s.ListMerchantPayments(ctx, "mer_P", domain.Filters{}, page1.NextCursor)
+		if err != nil {
+			t.Fatalf("page2: %v", err)
+		}
+		if len(page2.Items) == 0 {
+			t.Fatal("page2 should have at least one item")
+		}
+		// No overlap between page1 and page2 ids.
+		seen := map[string]bool{}
+		for _, p := range page1.Items {
+			seen[p.ID] = true
+		}
+		for _, p := range page2.Items {
+			if seen[p.ID] {
+				t.Fatalf("id %s appears on both pages", p.ID)
+			}
+		}
+	})
+
+	t.Run("ListAllPayments_admin_sees_across_merchants", func(t *testing.T) {
+		page, err := s.ListAllPayments(ctx, domain.Filters{}, "")
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		// Should include at least one from each merchant we've created above.
+		merchants := map[string]bool{}
+		for _, p := range page.Items {
+			merchants[p.MerchantID] = true
+		}
+		if len(merchants) < 2 {
+			t.Fatalf("admin view should span merchants; saw %v", merchants)
 		}
 	})
 

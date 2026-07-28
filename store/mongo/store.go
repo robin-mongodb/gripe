@@ -6,7 +6,9 @@ package mongo
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -338,8 +340,42 @@ func (s *Store) RefundPayment(ctx context.Context, paymentID string, amountMinor
 
 // ---------- Not yet implemented ----------
 
-func (s *Store) CapturePayment(_ context.Context, _ string) (domain.Payment, error) {
-	return domain.Payment{}, errors.ErrUnsupported
+// CapturePayment — task 16 (UC-3). Moves an `authorized` payment to `captured`.
+// Conditional update: only succeeds if the current status is `authorized`. Zero
+// matched rows means either the payment doesn't exist or the state moved under
+// us — we probe to distinguish (same pattern as RefundPayment).
+func (s *Store) CapturePayment(ctx context.Context, paymentID string) (domain.Payment, error) {
+	now := time.Now().UTC()
+	filter := bson.M{
+		"_id":    paymentID,
+		"status": string(domain.StatusAuthorized),
+	}
+	update := bson.M{
+		"$set": bson.M{
+			"status":     string(domain.StatusCaptured),
+			"updated_at": now,
+		},
+	}
+
+	res := s.db.Collection(colPayments).FindOneAndUpdate(ctx, filter, update,
+		options.FindOneAndUpdate().SetReturnDocument(options.After))
+	var updated paymentDoc
+	err := res.Decode(&updated)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		var current paymentDoc
+		findErr := s.db.Collection(colPayments).FindOne(ctx, bson.M{"_id": paymentID}).Decode(&current)
+		if errors.Is(findErr, mongo.ErrNoDocuments) {
+			return domain.Payment{}, store.ErrNotFound
+		}
+		if findErr != nil {
+			return domain.Payment{}, findErr
+		}
+		return domain.Payment{}, fmt.Errorf("%w: cannot capture from status %s (only from authorized)", store.ErrInvalidState, current.Status)
+	}
+	if err != nil {
+		return domain.Payment{}, err
+	}
+	return updated.toDomain(), nil
 }
 func (s *Store) SettlePayment(_ context.Context, _ string) (domain.Payment, error) {
 	return domain.Payment{}, errors.ErrUnsupported
@@ -347,11 +383,127 @@ func (s *Store) SettlePayment(_ context.Context, _ string) (domain.Payment, erro
 func (s *Store) SettleRefund(_ context.Context, _ string) (domain.Refund, error) {
 	return domain.Refund{}, errors.ErrUnsupported
 }
-func (s *Store) ListMerchantPayments(_ context.Context, _ string, _ domain.Filters, _ domain.Cursor) (domain.Page, error) {
-	return domain.Page{}, errors.ErrUnsupported
+// ListMerchantPayments — task 22 (UC-5). Merchant sees own payments, newest first.
+// Cursor is base64-of-{created_at,id}; opaque to callers. Page size is capped at listPageMax.
+//
+// ponytail: single compound index (merchant_id, created_at DESC) handles the sort + filter;
+// if callers add sort-by-amount later, add another index rather than sort in memory.
+func (s *Store) ListMerchantPayments(ctx context.Context, merchantID string, filters domain.Filters, cursor domain.Cursor) (domain.Page, error) {
+	return s.listPayments(ctx, merchantID, filters, cursor)
 }
-func (s *Store) ListAllPayments(_ context.Context, _ domain.Filters, _ domain.Cursor) (domain.Page, error) {
-	return domain.Page{}, errors.ErrUnsupported
+
+// ListAllPayments — task 24 (UC-6). Admin variant: no merchant scoping unless the
+// admin explicitly filters by merchant_id.
+func (s *Store) ListAllPayments(ctx context.Context, filters domain.Filters, cursor domain.Cursor) (domain.Page, error) {
+	return s.listPayments(ctx, "", filters, cursor)
+}
+
+const listPageMax = 50
+
+// listPayments is the shared implementation. If merchantScope != "" the query is pinned
+// to that merchant; otherwise (admin), filters.MerchantID may narrow the query.
+func (s *Store) listPayments(ctx context.Context, merchantScope string, filters domain.Filters, cursor domain.Cursor) (domain.Page, error) {
+	q := bson.M{}
+	switch {
+	case merchantScope != "":
+		q["merchant_id"] = merchantScope
+	case filters.MerchantID != "":
+		q["merchant_id"] = filters.MerchantID
+	}
+	if filters.Status != "" {
+		q["status"] = string(filters.Status)
+	}
+	if filters.Method != "" {
+		q["method"] = string(filters.Method)
+	}
+	if filters.Currency != "" {
+		q["currency"] = string(filters.Currency)
+	}
+	if !filters.FromTime.IsZero() || !filters.ToTime.IsZero() {
+		created := bson.M{}
+		if !filters.FromTime.IsZero() {
+			created["$gte"] = filters.FromTime
+		}
+		if !filters.ToTime.IsZero() {
+			created["$lte"] = filters.ToTime
+		}
+		q["created_at"] = created
+	}
+	if filters.MinMinor > 0 || filters.MaxMinor > 0 {
+		amt := bson.M{}
+		if filters.MinMinor > 0 {
+			amt["$gte"] = filters.MinMinor
+		}
+		if filters.MaxMinor > 0 {
+			amt["$lte"] = filters.MaxMinor
+		}
+		q["amount_minor"] = amt
+	}
+
+	// Cursor decode: keyset pagination on (created_at, _id). Assumes created_at is
+	// unique-enough that the id tiebreak only kicks in on same-timestamp inserts.
+	if cursor != "" {
+		c, err := decodeCursor(cursor)
+		if err != nil {
+			return domain.Page{}, fmt.Errorf("%w: bad cursor", store.ErrInvalidState)
+		}
+		// keyset predicate: (created_at, _id) < cursor when sorting DESC by created_at.
+		q["$or"] = bson.A{
+			bson.M{"created_at": bson.M{"$lt": c.CreatedAt}},
+			bson.M{"created_at": c.CreatedAt, "_id": bson.M{"$lt": c.ID}},
+		}
+	}
+
+	opts := options.Find().
+		SetSort(bson.D{{Key: "created_at", Value: -1}, {Key: "_id", Value: -1}}).
+		SetLimit(int64(listPageMax) + 1) // fetch one extra to detect "more".
+
+	cur, err := s.db.Collection(colPayments).Find(ctx, q, opts)
+	if err != nil {
+		return domain.Page{}, err
+	}
+	defer cur.Close(ctx)
+
+	var docs []paymentDoc
+	if err := cur.All(ctx, &docs); err != nil {
+		return domain.Page{}, err
+	}
+
+	var next domain.Cursor
+	if len(docs) > listPageMax {
+		last := docs[listPageMax-1]
+		next = encodeCursor(paymentCursor{CreatedAt: last.CreatedAt, ID: last.ID})
+		docs = docs[:listPageMax]
+	}
+
+	items := make([]domain.Payment, len(docs))
+	for i, d := range docs {
+		items[i] = d.toDomain()
+	}
+	return domain.Page{Items: items, NextCursor: next}, nil
+}
+
+// paymentCursor is the keyset shape. base64(json) — opaque to callers.
+type paymentCursor struct {
+	CreatedAt time.Time `json:"c"`
+	ID        string    `json:"i"`
+}
+
+func encodeCursor(c paymentCursor) domain.Cursor {
+	b, _ := json.Marshal(c)
+	return domain.Cursor(base64.RawURLEncoding.EncodeToString(b))
+}
+
+func decodeCursor(c domain.Cursor) (paymentCursor, error) {
+	b, err := base64.RawURLEncoding.DecodeString(string(c))
+	if err != nil {
+		return paymentCursor{}, err
+	}
+	var out paymentCursor
+	if err := json.Unmarshal(b, &out); err != nil {
+		return paymentCursor{}, err
+	}
+	return out, nil
 }
 func (s *Store) GetMerchantBalances(_ context.Context, _ string) ([]domain.Balance, error) {
 	return nil, errors.ErrUnsupported

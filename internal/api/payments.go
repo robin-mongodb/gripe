@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/robin-mongodb/gripe/internal/domain"
 	"github.com/robin-mongodb/gripe/internal/store"
@@ -128,6 +130,119 @@ func (s *Server) refundPayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, refund)
+}
+
+// capturePayment — task 16. Merchant (own) or admin only. Store enforces state machine.
+func (s *Server) capturePayment(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "store not configured"})
+		return
+	}
+	actor, err := ActorFromContext(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "no actor"})
+		return
+	}
+	if actor.Role == domain.RoleCustomer {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "customers cannot capture"})
+		return
+	}
+
+	paymentID := r.PathValue("id")
+
+	// Merchant scoping: verify ownership before mutating.
+	if actor.Role == domain.RoleMerchant {
+		if _, err := s.store.GetPayment(r.Context(), paymentID, actor); err != nil {
+			writeStoreError(w, err)
+			return
+		}
+	}
+
+	p, err := s.store.CapturePayment(r.Context(), paymentID)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+// listPayments — task 22 (UC-5) and task 24 (UC-6).
+//   - merchant: forced scope to their own id (filters.merchant_id ignored)
+//   - admin: optional filters.merchant_id
+//   - customer: forbidden (payments visible only via detail read)
+//
+// Query params: status, method, currency, merchant_id (admin only), from, to
+// (RFC3339), min_minor, max_minor, cursor.
+func (s *Server) listPayments(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "store not configured"})
+		return
+	}
+	actor, err := ActorFromContext(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "no actor"})
+		return
+	}
+	if actor.Role == domain.RoleCustomer {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "customers cannot list payments"})
+		return
+	}
+
+	q := r.URL.Query()
+	filters := domain.Filters{
+		Status:   domain.PaymentStatus(q.Get("status")),
+		Method:   domain.PaymentMethod(q.Get("method")),
+		Currency: domain.Currency(q.Get("currency")),
+	}
+	if actor.Role == domain.RoleAdmin {
+		filters.MerchantID = q.Get("merchant_id")
+	}
+	if v := q.Get("from"); v != "" {
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad 'from': " + err.Error()})
+			return
+		}
+		filters.FromTime = t
+	}
+	if v := q.Get("to"); v != "" {
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad 'to': " + err.Error()})
+			return
+		}
+		filters.ToTime = t
+	}
+	if v := q.Get("min_minor"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad 'min_minor': " + err.Error()})
+			return
+		}
+		filters.MinMinor = n
+	}
+	if v := q.Get("max_minor"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad 'max_minor': " + err.Error()})
+			return
+		}
+		filters.MaxMinor = n
+	}
+	cursor := domain.Cursor(q.Get("cursor"))
+
+	var page domain.Page
+	switch actor.Role {
+	case domain.RoleMerchant:
+		page, err = s.store.ListMerchantPayments(r.Context(), actor.ID, filters, cursor)
+	case domain.RoleAdmin:
+		page, err = s.store.ListAllPayments(r.Context(), filters, cursor)
+	}
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
 }
 
 // writeStoreError maps store sentinel errors to HTTP statuses so handlers stay tiny.

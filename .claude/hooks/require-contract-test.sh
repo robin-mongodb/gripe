@@ -19,8 +19,12 @@ case "$file" in
   */contract_test.go|*/testsupport/*) exit 0 ;;
 esac
 
-# check contract_test.go is staged/modified in this session
-if ! git -C "$(dirname "$file")" status --porcelain 2>/dev/null | grep -qE 'contract_test\.go'; then
+# check contract_test.go is staged/modified in this session — from repo root so
+# a shared store/contract_test.go is visible even when editing store/mongo/*.
+repo="$(git -C "$(dirname "$file")" rev-parse --show-toplevel 2>/dev/null || echo "")"
+if [ -z "$repo" ]; then exit 0; fi
+
+if ! git -C "$repo" status --porcelain 2>/dev/null | grep -qE 'contract_test\.go'; then
   echo "Blocked: editing $file requires a matching change in store/contract_test.go." >&2
   echo "A Store feature isn't done until both backends pass the same contract." >&2
   exit 2

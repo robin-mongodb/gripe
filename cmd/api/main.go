@@ -13,6 +13,7 @@ import (
 	"github.com/robin-mongodb/gripe/internal/api"
 	"github.com/robin-mongodb/gripe/internal/config"
 	"github.com/robin-mongodb/gripe/internal/store"
+	mongostore "github.com/robin-mongodb/gripe/store/mongo"
 )
 
 func main() {
@@ -25,12 +26,19 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Backend selection. Concrete impls land in tasks 8 (Mongo) / 27 (PG).
-	// ponytail: nil Store until an impl lands — /healthz still reports which backend was chosen.
+	// Backend selection.
 	var s store.Store
 	switch cfg.Backend {
 	case config.BackendMongo:
-		log.Info("selected backend", "backend", "mongo", "note", "Mongo Store impl pending — task 8")
+		bctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		ms, err := mongostore.New(bctx, cfg.MongoURI, cfg.MongoDB)
+		cancel()
+		if err != nil {
+			log.Error("mongo store", "err", err)
+			os.Exit(1)
+		}
+		s = ms
+		log.Info("selected backend", "backend", "mongo", "db", cfg.MongoDB)
 	case config.BackendPostgres:
 		log.Info("selected backend", "backend", "postgres", "note", "Postgres Store impl pending — task 27")
 	}

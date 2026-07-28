@@ -1,5 +1,4 @@
-// Package api wires the HTTP surface. Handlers land later — v1 exposes /healthz and
-// echoes which backend is live.
+// Package api wires the HTTP surface.
 package api
 
 import (
@@ -12,12 +11,19 @@ import (
 	"github.com/robin-mongodb/gripe/internal/store"
 )
 
+// idempotencyTTL is how long a persisted response replays for.
+// UC-2 spec: 24h on both backends.
+const idempotencyTTL = 24 * time.Hour
+
+// Server holds handler dependencies. Store may be nil pre-boot (see cmd/api/main.go).
 type Server struct {
 	cfg   config.Config
 	store store.Store
 	mux   *http.ServeMux
 }
 
+// New builds the HTTP surface. The idempotency middleware needs an IdempotencyStore;
+// impls (store/mongo.Store) satisfy it via type assertion.
 func New(cfg config.Config, s store.Store) *Server {
 	srv := &Server{cfg: cfg, store: s, mux: http.NewServeMux()}
 	srv.routes()
@@ -27,8 +33,32 @@ func New(cfg config.Config, s store.Store) *Server {
 func (s *Server) Handler() http.Handler { return s.mux }
 
 func (s *Server) routes() {
+	// Unprotected health probe. No actor, no idempotency.
 	s.mux.HandleFunc("GET /v1/healthz", s.healthz)
-	// Real handlers land as tasks 5/7/8/12–17 ship.
+
+	// Payment routes go through: actorMiddleware -> idempotencyMiddleware (POST-only) -> handler.
+	var idem IdempotencyStore
+	if is, ok := any(s.store).(IdempotencyStore); ok {
+		idem = is
+	}
+
+	// Reads
+	s.mux.Handle("GET /v1/payments/{id}", actorMiddleware(http.HandlerFunc(s.getPayment)))
+
+	// Writes: idempotency is only useful when the store can persist it.
+	if idem != nil {
+		s.mux.Handle("POST /v1/payments",
+			actorMiddleware(idempotencyMiddleware(idem, idempotencyTTL, http.HandlerFunc(s.createPayment))))
+		s.mux.Handle("POST /v1/payments/{id}/refunds",
+			actorMiddleware(idempotencyMiddleware(idem, idempotencyTTL, http.HandlerFunc(s.refundPayment))))
+	} else {
+		// Boot-time fallback so /v1/payments 503s gracefully instead of panicking.
+		unavail := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "store not configured"})
+		})
+		s.mux.Handle("POST /v1/payments", actorMiddleware(unavail))
+		s.mux.Handle("POST /v1/payments/{id}/refunds", actorMiddleware(unavail))
+	}
 }
 
 func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {

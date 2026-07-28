@@ -27,7 +27,7 @@ func New(cfg config.Config, s store.Store) *Server {
 func (s *Server) Handler() http.Handler { return s.mux }
 
 func (s *Server) routes() {
-	s.mux.HandleFunc("GET /healthz", s.healthz)
+	s.mux.HandleFunc("GET /v1/healthz", s.healthz)
 	// Real handlers land as tasks 5/7/8/12–17 ship.
 }
 

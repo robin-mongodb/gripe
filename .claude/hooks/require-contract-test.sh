@@ -24,8 +24,9 @@ esac
 repo="$(git -C "$(dirname "$file")" rev-parse --show-toplevel 2>/dev/null || echo "")"
 if [ -z "$repo" ]; then exit 0; fi
 
-if ! git -C "$repo" status --porcelain 2>/dev/null | grep -qE 'contract_test\.go'; then
-  echo "Blocked: editing $file requires a matching change in store/contract_test.go." >&2
+if ! git -C "$repo" status --porcelain 2>/dev/null | grep -qE 'store/(contract/contract\.go|contract_test\.go|[a-z]+/contract_test\.go)'; then
+  echo "Blocked: editing $file requires a matching change in the shared contract suite" >&2
+  echo "(store/contract/contract.go or a backend contract_test.go)." >&2
   echo "A Store feature isn't done until both backends pass the same contract." >&2
   exit 2
 fi

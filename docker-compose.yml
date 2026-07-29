@@ -40,3 +40,11 @@ services:
     build: { context: ., dockerfile: Dockerfile.cycler }
     env_file: .env
     restart: unless-stopped
+
+  # `seed` is a one-shot CLI, not a long-running service. Invoke with:
+  #   docker compose run --rm seed -m 5 -p 40 -s 3
+  # Override GRIPE_BACKEND with `-e GRIPE_BACKEND=postgres` to target RDS instead of Atlas.
+  seed:
+    build: { context: ., dockerfile: Dockerfile.seed }
+    env_file: .env
+    profiles: ["tools"]

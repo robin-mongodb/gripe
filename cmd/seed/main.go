@@ -15,6 +15,7 @@ import (
 	"github.com/robin-mongodb/gripe/internal/seed"
 	"github.com/robin-mongodb/gripe/internal/store"
 	mongostore "github.com/robin-mongodb/gripe/store/mongo"
+	pgstore "github.com/robin-mongodb/gripe/store/postgres"
 )
 
 func main() {
@@ -46,8 +47,13 @@ func main() {
 		defer ms.Close(context.Background())
 		s = ms
 	case config.BackendPostgres:
-		log.Error("seed: postgres backend arrives with task 27")
-		os.Exit(1)
+		ps, err := pgstore.New(ctx, cfg.PGWriterDSN)
+		if err != nil {
+			log.Error("postgres", "err", err)
+			os.Exit(1)
+		}
+		defer ps.Close(context.Background())
+		s = ps
 	}
 
 	rep, err := seed.Run(ctx, s, opt)

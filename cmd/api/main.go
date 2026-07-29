@@ -14,6 +14,7 @@ import (
 	"github.com/robin-mongodb/gripe/internal/config"
 	"github.com/robin-mongodb/gripe/internal/store"
 	mongostore "github.com/robin-mongodb/gripe/store/mongo"
+	pgstore "github.com/robin-mongodb/gripe/store/postgres"
 )
 
 func main() {
@@ -40,7 +41,15 @@ func main() {
 		s = ms
 		log.Info("selected backend", "backend", "mongo", "db", cfg.MongoDB)
 	case config.BackendPostgres:
-		log.Info("selected backend", "backend", "postgres", "note", "Postgres Store impl pending — task 27")
+		bctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ps, err := pgstore.New(bctx, cfg.PGWriterDSN)
+		cancel()
+		if err != nil {
+			log.Error("postgres store", "err", err)
+			os.Exit(1)
+		}
+		s = ps
+		log.Info("selected backend", "backend", "postgres")
 	}
 
 	srv := &http.Server{

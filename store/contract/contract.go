@@ -1,13 +1,14 @@
-// Package store_test hosts the shared contract suite that every Store impl must pass.
-// Each impl has its own _test.go (e.g. store/mongo/store_test.go) that calls RunStoreContract
-// with a live store from testcontainers.
-package store_test
+// Package contract hosts the shared contract suite that every Store impl must pass.
+// Each impl has its own _test.go (e.g. store/mongo/contract_test.go) that calls
+// RunStoreContract with a live store from testcontainers.
+package contract
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/robin-mongodb/gripe/internal/domain"
 	"github.com/robin-mongodb/gripe/internal/store"
@@ -427,17 +428,130 @@ func RunStoreContract(t *testing.T, s store.Store) {
 	})
 
 	t.Run("ListAllPayments_admin_sees_across_merchants", func(t *testing.T) {
-		page, err := s.ListAllPayments(ctx, domain.Filters{}, "")
+		// Admin filter by merchant_id must work regardless of page saturation from earlier subtests.
+		for _, mid := range []string{"mer_L", "mer_M"} {
+			p, err := s.ListAllPayments(ctx, domain.Filters{MerchantID: mid}, "")
+			if err != nil {
+				t.Fatalf("list %s: %v", mid, err)
+			}
+			if len(p.Items) == 0 {
+				t.Fatalf("admin filter merchant_id=%s returned 0 items", mid)
+			}
+			for _, item := range p.Items {
+				if item.MerchantID != mid {
+					t.Fatalf("filter leaked: %s", item.MerchantID)
+				}
+			}
+		}
+	})
+
+	// Task 19/20/21 (UC-7/8/9): subscription lifecycle.
+	t.Run("CreateSubscription_persists_active_with_next_charge", func(t *testing.T) {
+		start := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+		sub, err := s.CreateSubscription(ctx, domain.CreateSubscriptionInput{
+			MerchantID:  "mer_S",
+			CustomerID:  "cus_s",
+			AmountMinor: 999,
+			Currency:    domain.USD,
+			Method:      domain.MethodCard,
+			Cadence:     domain.CadenceMonthly,
+			StartAt:     start,
+		})
 		if err != nil {
-			t.Fatalf("list: %v", err)
+			t.Fatalf("create sub: %v", err)
 		}
-		// Should include at least one from each merchant we've created above.
-		merchants := map[string]bool{}
-		for _, p := range page.Items {
-			merchants[p.MerchantID] = true
+		if sub.Status != domain.SubActive {
+			t.Fatalf("status = %s, want active", sub.Status)
 		}
-		if len(merchants) < 2 {
-			t.Fatalf("admin view should span merchants; saw %v", merchants)
+		if !sub.NextChargeAt.Equal(start) {
+			t.Fatalf("next_charge_at = %v, want %v", sub.NextChargeAt, start)
+		}
+		if sub.NextCycleIdx != 0 {
+			t.Fatalf("next_cycle_index = %d, want 0", sub.NextCycleIdx)
+		}
+	})
+
+	t.Run("CreateSubscription_rejects_bad_cadence", func(t *testing.T) {
+		_, err := s.CreateSubscription(ctx, domain.CreateSubscriptionInput{
+			MerchantID: "mer_S", CustomerID: "cus_s", AmountMinor: 100,
+			Currency: domain.USD, Method: domain.MethodCard, Cadence: "yearly",
+		})
+		if !errors.Is(err, store.ErrInvalidState) {
+			t.Fatalf("want ErrInvalidState, got %v", err)
+		}
+	})
+
+	t.Run("DueSubscriptions_returns_active_at_or_before_asOf", func(t *testing.T) {
+		past := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		future := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+		// Due (past).
+		_, err := s.CreateSubscription(ctx, domain.CreateSubscriptionInput{
+			MerchantID: "mer_D", CustomerID: "cus_d", AmountMinor: 100,
+			Currency: domain.USD, Method: domain.MethodCard, Cadence: domain.CadenceDaily,
+			StartAt: past,
+		})
+		if err != nil {
+			t.Fatalf("create due: %v", err)
+		}
+		// Not due (future).
+		_, err = s.CreateSubscription(ctx, domain.CreateSubscriptionInput{
+			MerchantID: "mer_D", CustomerID: "cus_d", AmountMinor: 100,
+			Currency: domain.USD, Method: domain.MethodCard, Cadence: domain.CadenceDaily,
+			StartAt: future,
+		})
+		if err != nil {
+			t.Fatalf("create future: %v", err)
+		}
+		due, err := s.DueSubscriptions(ctx, time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC), 100)
+		if err != nil {
+			t.Fatalf("due: %v", err)
+		}
+		var sawMerD bool
+		for _, sub := range due {
+			if sub.MerchantID == "mer_D" {
+				sawMerD = true
+				if sub.NextChargeAt.After(time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)) {
+					t.Fatalf("future sub included: next=%v", sub.NextChargeAt)
+				}
+			}
+		}
+		if !sawMerD {
+			t.Fatal("expected due sub for mer_D")
+		}
+	})
+
+	t.Run("CancelSubscription_flips_status", func(t *testing.T) {
+		sub, err := s.CreateSubscription(ctx, domain.CreateSubscriptionInput{
+			MerchantID: "mer_X", CustomerID: "cus_x", AmountMinor: 100,
+			Currency: domain.GBP, Method: domain.MethodCard, Cadence: domain.CadenceDaily,
+			StartAt: time.Now().UTC().Add(-time.Hour),
+		})
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		cancelled, err := s.CancelSubscription(ctx, sub.ID)
+		if err != nil {
+			t.Fatalf("cancel: %v", err)
+		}
+		if cancelled.Status != domain.SubCancelled {
+			t.Fatalf("status = %s, want cancelled", cancelled.Status)
+		}
+		// Cancelled subs must not appear in DueSubscriptions.
+		due, err := s.DueSubscriptions(ctx, time.Now().UTC(), 100)
+		if err != nil {
+			t.Fatalf("due: %v", err)
+		}
+		for _, d := range due {
+			if d.ID == sub.ID {
+				t.Fatalf("cancelled sub %s still due", sub.ID)
+			}
+		}
+	})
+
+	t.Run("CancelSubscription_missing_returns_ErrNotFound", func(t *testing.T) {
+		_, err := s.CancelSubscription(ctx, "sub_does_not_exist")
+		if !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("want ErrNotFound, got %v", err)
 		}
 	})
 

@@ -27,6 +27,7 @@ const (
 	colPayments = "payments"
 	colIdemKeys = "idempotency_keys"
 	colRefunds  = "refunds"
+	colSubs     = "subscriptions"
 
 	// Amounts ending in .13 (minor units mod 100 == 13) are mock-declined.
 	// Only relevant to card / Apple Pay / Google Pay.
@@ -72,6 +73,14 @@ func (s *Store) ensureIndexes(ctx context.Context) error {
 	})
 	if err != nil {
 		return fmt.Errorf("refunds indexes: %w", err)
+	}
+	// Subscriptions: the cycler queries {status, next_charge_at <= now}. Compound
+	// (status, next_charge_at) supports the equality-then-range pattern efficiently.
+	_, err = s.db.Collection(colSubs).Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "next_charge_at", Value: 1}}},
+	})
+	if err != nil {
+		return fmt.Errorf("subscriptions indexes: %w", err)
 	}
 	// TTL on expires_at vacuums expired idempotency records automatically.
 	_, err = s.db.Collection(colIdemKeys).Indexes().CreateMany(ctx, []mongo.IndexModel{
@@ -508,14 +517,149 @@ func decodeCursor(c domain.Cursor) (paymentCursor, error) {
 func (s *Store) GetMerchantBalances(_ context.Context, _ string) ([]domain.Balance, error) {
 	return nil, errors.ErrUnsupported
 }
-func (s *Store) CreateSubscription(_ context.Context, _ domain.CreateSubscriptionInput) (domain.Subscription, error) {
-	return domain.Subscription{}, errors.ErrUnsupported
+// ---------- Subscriptions ----------
+
+type subscriptionDoc struct {
+	ID           string    `bson:"_id"`
+	MerchantID   string    `bson:"merchant_id"`
+	CustomerID   string    `bson:"customer_id"`
+	AmountMinor  int64     `bson:"amount_minor"`
+	Currency     string    `bson:"currency"`
+	Method       string    `bson:"method"`
+	Cadence      string    `bson:"cadence"`
+	Status       string    `bson:"status"`
+	NextChargeAt time.Time `bson:"next_charge_at"`
+	NextCycleIdx int64     `bson:"next_cycle_index"`
+	CreatedAt    time.Time `bson:"created_at"`
+	UpdatedAt    time.Time `bson:"updated_at,omitempty"`
 }
-func (s *Store) CancelSubscription(_ context.Context, _ string) (domain.Subscription, error) {
-	return domain.Subscription{}, errors.ErrUnsupported
+
+func (d subscriptionDoc) toDomain() domain.Subscription {
+	return domain.Subscription{
+		ID:           d.ID,
+		MerchantID:   d.MerchantID,
+		CustomerID:   d.CustomerID,
+		AmountMinor:  d.AmountMinor,
+		Currency:     domain.Currency(d.Currency),
+		Method:       domain.PaymentMethod(d.Method),
+		Cadence:      domain.SubscriptionCadence(d.Cadence),
+		Status:       domain.SubscriptionStatus(d.Status),
+		NextChargeAt: d.NextChargeAt,
+		NextCycleIdx: d.NextCycleIdx,
+		CreatedAt:    d.CreatedAt,
+	}
 }
-func (s *Store) DueSubscriptions(_ context.Context, _ time.Time, _ int) ([]domain.Subscription, error) {
-	return nil, errors.ErrUnsupported
+
+// CreateSubscription — task 19 (UC-7). Persists an active subscription with next_charge_at set.
+func (s *Store) CreateSubscription(ctx context.Context, in domain.CreateSubscriptionInput) (domain.Subscription, error) {
+	if strings.TrimSpace(in.MerchantID) == "" {
+		return domain.Subscription{}, fmt.Errorf("%w: merchant_id required", store.ErrInvalidState)
+	}
+	if strings.TrimSpace(in.CustomerID) == "" {
+		return domain.Subscription{}, fmt.Errorf("%w: customer_id required", store.ErrInvalidState)
+	}
+	if in.AmountMinor <= 0 {
+		return domain.Subscription{}, fmt.Errorf("%w: amount_minor must be > 0", store.ErrInvalidState)
+	}
+	if !in.Currency.Valid() {
+		return domain.Subscription{}, fmt.Errorf("%w: currency %q", store.ErrInvalidState, in.Currency)
+	}
+	if !in.Method.Valid() {
+		return domain.Subscription{}, fmt.Errorf("%w: method %q", store.ErrInvalidState, in.Method)
+	}
+	if !in.Cadence.Valid() {
+		return domain.Subscription{}, fmt.Errorf("%w: cadence %q", store.ErrInvalidState, in.Cadence)
+	}
+	start := in.StartAt
+	if start.IsZero() {
+		start = time.Now().UTC()
+	}
+	now := time.Now().UTC()
+	doc := subscriptionDoc{
+		ID:           newID("sub"),
+		MerchantID:   in.MerchantID,
+		CustomerID:   in.CustomerID,
+		AmountMinor:  in.AmountMinor,
+		Currency:     string(in.Currency),
+		Method:       string(in.Method),
+		Cadence:      string(in.Cadence),
+		Status:       string(domain.SubActive),
+		NextChargeAt: start,
+		NextCycleIdx: 0,
+		CreatedAt:    now,
+	}
+	if _, err := s.db.Collection(colSubs).InsertOne(ctx, doc); err != nil {
+		return domain.Subscription{}, fmt.Errorf("insert subscription: %w", err)
+	}
+	return doc.toDomain(), nil
+}
+
+// CancelSubscription — task 21 (UC-9). Idempotent: cancelling already-cancelled is fine.
+func (s *Store) CancelSubscription(ctx context.Context, subscriptionID string) (domain.Subscription, error) {
+	now := time.Now().UTC()
+	res := s.db.Collection(colSubs).FindOneAndUpdate(ctx,
+		bson.M{"_id": subscriptionID},
+		bson.M{"$set": bson.M{"status": string(domain.SubCancelled), "updated_at": now}},
+		options.FindOneAndUpdate().SetReturnDocument(options.After))
+	var d subscriptionDoc
+	err := res.Decode(&d)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return domain.Subscription{}, store.ErrNotFound
+	}
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	return d.toDomain(), nil
+}
+
+// DueSubscriptions — task 20 (UC-8). The cycler pulls these on every tick.
+// ponytail: no locking — cycler uses conditional AdvanceSubscription (matches on
+// current cycle_index) to make retries safe.
+func (s *Store) DueSubscriptions(ctx context.Context, asOf time.Time, limit int) ([]domain.Subscription, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	cur, err := s.db.Collection(colSubs).Find(ctx,
+		bson.M{
+			"status":         string(domain.SubActive),
+			"next_charge_at": bson.M{"$lte": asOf},
+		},
+		options.Find().
+			SetSort(bson.D{{Key: "next_charge_at", Value: 1}}).
+			SetLimit(int64(limit)),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+
+	var docs []subscriptionDoc
+	if err := cur.All(ctx, &docs); err != nil {
+		return nil, err
+	}
+	out := make([]domain.Subscription, len(docs))
+	for i, d := range docs {
+		out[i] = d.toDomain()
+	}
+	return out, nil
+}
+
+// AdvanceSubscription moves next_charge_at forward and bumps NextCycleIdx atomically.
+// Called by the cycler after a successful CreatePayment for the current cycle. The
+// conditional match on current cycle_index makes retries a no-op.
+//
+// Not on the Store interface yet — worker calls it directly on the concrete store.
+// Promote to interface when the PG port lands.
+func (s *Store) AdvanceSubscription(ctx context.Context, subscriptionID string, currentCycleIdx int64, nextChargeAt time.Time) error {
+	_, err := s.db.Collection(colSubs).UpdateOne(ctx,
+		bson.M{"_id": subscriptionID, "next_cycle_index": currentCycleIdx},
+		bson.M{"$set": bson.M{
+			"next_charge_at":   nextChargeAt,
+			"next_cycle_index": currentCycleIdx + 1,
+			"updated_at":       time.Now().UTC(),
+		}},
+	)
+	return err
 }
 
 // Compile-time checks.

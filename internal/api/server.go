@@ -54,6 +54,10 @@ func (s *Server) routes() {
 			actorMiddleware(idempotencyMiddleware(idem, idempotencyTTL, http.HandlerFunc(s.capturePayment))))
 		s.mux.Handle("POST /v1/payments/{id}/refunds",
 			actorMiddleware(idempotencyMiddleware(idem, idempotencyTTL, http.HandlerFunc(s.refundPayment))))
+		s.mux.Handle("POST /v1/subscriptions",
+			actorMiddleware(idempotencyMiddleware(idem, idempotencyTTL, http.HandlerFunc(s.createSubscription))))
+		s.mux.Handle("POST /v1/subscriptions/{id}/cancel",
+			actorMiddleware(idempotencyMiddleware(idem, idempotencyTTL, http.HandlerFunc(s.cancelSubscription))))
 	} else {
 		unavail := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "store not configured"})
@@ -61,6 +65,8 @@ func (s *Server) routes() {
 		s.mux.Handle("POST /v1/payments", actorMiddleware(unavail))
 		s.mux.Handle("POST /v1/payments/{id}/capture", actorMiddleware(unavail))
 		s.mux.Handle("POST /v1/payments/{id}/refunds", actorMiddleware(unavail))
+		s.mux.Handle("POST /v1/subscriptions", actorMiddleware(unavail))
+		s.mux.Handle("POST /v1/subscriptions/{id}/cancel", actorMiddleware(unavail))
 	}
 }
 

@@ -86,6 +86,21 @@ func (c SubscriptionCadence) Valid() bool {
 	return c == CadenceDaily || c == CadenceWeekly || c == CadenceMonthly
 }
 
+// Advance returns t plus one cadence unit. Monthly adds a calendar month (30d approximation
+// would drift; use time.AddDate so Jan 31 → Feb 28/29).
+// ponytail: no timezone handling — UTC everywhere in this codebase.
+func (c SubscriptionCadence) Advance(t time.Time) time.Time {
+	switch c {
+	case CadenceDaily:
+		return t.AddDate(0, 0, 1)
+	case CadenceWeekly:
+		return t.AddDate(0, 0, 7)
+	case CadenceMonthly:
+		return t.AddDate(0, 1, 0)
+	}
+	return t
+}
+
 type SubscriptionStatus string
 
 const (

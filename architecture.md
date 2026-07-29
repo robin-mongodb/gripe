@@ -13,6 +13,7 @@ Single source of truth for the deployed shape. `architecture.html` is the visual
 | `api`           | Go HTTP service. Actor header middleware, idempotency, calls `Store`.                          |
 | `fraud-worker`  | Go binary. Polls `payment.created` SQS. Simulates fraud check → `Store.SettleFraudScore`.       |
 | `fee-worker`    | Go binary. Polls `payment.created` SQS. Simulates network-fee calc → `Store.SettleNetworkFee`. |
+| `cycler`        | Go binary. Polls the store for due subscriptions; creates the next payment per cycle. Idempotent per `(subscription_id, cycle_index)`. |
 
 All Go binaries share one module (`gripe/`). `api` and workers use the same `Store` implementation chosen by env var.
 

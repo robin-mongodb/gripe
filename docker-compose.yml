@@ -35,3 +35,8 @@ services:
     build: { context: ., dockerfile: Dockerfile.fee-worker }
     env_file: .env
     restart: unless-stopped
+
+  cycler:
+    build: { context: ., dockerfile: Dockerfile.cycler }
+    env_file: .env
+    restart: unless-stopped

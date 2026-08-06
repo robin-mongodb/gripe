@@ -170,3 +170,13 @@ type Balance struct {
 	Currency     Currency `json:"currency"`
 	BalanceMinor int64    `json:"balance_minor"`
 }
+
+// MerchantDailyVolume is one row of the admin volume report: non-declined payment
+// volume for one merchant on one UTC day in one currency. Day is "2006-01-02".
+type MerchantDailyVolume struct {
+	MerchantID string   `json:"merchant_id"`
+	Day        string   `json:"day"`
+	Currency   Currency `json:"currency"`
+	TotalMinor int64    `json:"total_minor"`
+	Count      int64    `json:"count"`
+}

@@ -506,6 +506,43 @@ func (s *Store) AdvanceSubscription(ctx context.Context, subscriptionID string, 
 	return err
 }
 
+// ---------- Admin reports ----------
+
+// AdminVolumeReport — task 31. Cross-merchant daily volume, non-declined only.
+// created_at is timestamptz; AT TIME ZONE 'UTC' pins the day bucket to UTC
+// regardless of the session TimeZone setting.
+func (s *Store) AdminVolumeReport(ctx context.Context, from, to time.Time) ([]domain.MerchantDailyVolume, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT merchant_id,
+		       to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day,
+		       currency,
+		       sum(amount_minor) AS total_minor,
+		       count(*) AS cnt
+		FROM payments
+		WHERE status <> 'declined'
+		  AND created_at >= $1 AND created_at < $2
+		GROUP BY merchant_id, day, currency
+		ORDER BY merchant_id ASC, day ASC, currency ASC`,
+		from, to,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []domain.MerchantDailyVolume
+	for rows.Next() {
+		var r domain.MerchantDailyVolume
+		var cur string
+		if err := rows.Scan(&r.MerchantID, &r.Day, &cur, &r.TotalMinor, &r.Count); err != nil {
+			return nil, err
+		}
+		r.Currency = domain.Currency(cur)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // ---------- Not yet implemented ----------
 
 func (s *Store) SettlePayment(_ context.Context, _ string) (domain.Payment, error) {

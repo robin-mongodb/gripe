@@ -45,6 +45,7 @@ func (s *Server) routes() {
 	// Reads
 	s.mux.Handle("GET /v1/payments", actorMiddleware(http.HandlerFunc(s.listPayments)))
 	s.mux.Handle("GET /v1/payments/{id}", actorMiddleware(http.HandlerFunc(s.getPayment)))
+	s.mux.Handle("GET /v1/reports/volume", actorMiddleware(http.HandlerFunc(s.adminVolumeReport)))
 
 	// Writes: idempotency is only useful when the store can persist it.
 	if idem != nil {

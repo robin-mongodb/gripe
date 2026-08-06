@@ -517,6 +517,70 @@ func decodeCursor(c domain.Cursor) (paymentCursor, error) {
 func (s *Store) GetMerchantBalances(_ context.Context, _ string) ([]domain.Balance, error) {
 	return nil, errors.ErrUnsupported
 }
+
+// AdminVolumeReport — admin aggregate: non-declined payment volume grouped by
+// (merchant, UTC day, currency), sorted ascending. Single aggregation pipeline;
+// the DB does the group + sort, Go only maps rows.
+//
+// ponytail: $match leads with the created_at range, which the existing
+// (merchant_id, created_at) index can't serve — a created_at collection scan is
+// fine at this scale; add {created_at: 1} if the payments collection grows hot.
+func (s *Store) AdminVolumeReport(ctx context.Context, from, to time.Time) ([]domain.MerchantDailyVolume, error) {
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{
+			"status":     bson.M{"$ne": string(domain.StatusDeclined)},
+			"created_at": bson.M{"$gte": from, "$lt": to},
+		}}},
+		{{Key: "$group", Value: bson.M{
+			"_id": bson.M{
+				"merchant_id": "$merchant_id",
+				// $dateToString defaults to UTC when timezone is unset — pin it anyway.
+				"day": bson.M{"$dateToString": bson.M{
+					"format": "%Y-%m-%d", "date": "$created_at", "timezone": "UTC",
+				}},
+				"currency": "$currency",
+			},
+			"total_minor": bson.M{"$sum": "$amount_minor"},
+			"count":       bson.M{"$sum": 1},
+		}}},
+		{{Key: "$sort", Value: bson.D{
+			{Key: "_id.merchant_id", Value: 1},
+			{Key: "_id.day", Value: 1},
+			{Key: "_id.currency", Value: 1},
+		}}},
+	}
+
+	cur, err := s.db.Collection(colPayments).Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("volume report aggregate: %w", err)
+	}
+	defer cur.Close(ctx)
+
+	var rows []struct {
+		ID struct {
+			MerchantID string `bson:"merchant_id"`
+			Day        string `bson:"day"`
+			Currency   string `bson:"currency"`
+		} `bson:"_id"`
+		TotalMinor int64 `bson:"total_minor"`
+		Count      int64 `bson:"count"`
+	}
+	if err := cur.All(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("volume report decode: %w", err)
+	}
+
+	out := make([]domain.MerchantDailyVolume, len(rows))
+	for i, r := range rows {
+		out[i] = domain.MerchantDailyVolume{
+			MerchantID: r.ID.MerchantID,
+			Day:        r.ID.Day,
+			Currency:   domain.Currency(r.ID.Currency),
+			TotalMinor: r.TotalMinor,
+			Count:      r.Count,
+		}
+	}
+	return out, nil
+}
 // ---------- Subscriptions ----------
 
 type subscriptionDoc struct {

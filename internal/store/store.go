@@ -40,6 +40,11 @@ type Store interface {
 	// Balances — per currency; no single-currency variant.
 	GetMerchantBalances(ctx context.Context, merchantID string) ([]domain.Balance, error)
 
+	// Reports — admin (employee console). Volume per merchant per UTC day per currency,
+	// excluding declined payments. from inclusive, to exclusive. Rows ordered by
+	// (merchant_id, day, currency) ascending.
+	AdminVolumeReport(ctx context.Context, from, to time.Time) ([]domain.MerchantDailyVolume, error)
+
 	// Subscriptions.
 	CreateSubscription(ctx context.Context, in domain.CreateSubscriptionInput) (domain.Subscription, error)
 	CancelSubscription(ctx context.Context, subscriptionID string) (domain.Subscription, error)

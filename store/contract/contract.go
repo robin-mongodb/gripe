@@ -568,4 +568,79 @@ func RunStoreContract(t *testing.T, s store.Store) {
 			t.Fatalf("want ErrInvalidState on declined refund, got %v", err)
 		}
 	})
+
+	t.Run("AdminVolumeReport_groups_by_merchant_day_currency", func(t *testing.T) {
+		// Distinct merchant IDs so rows from earlier subtests don't interfere;
+		// all created_at land on "today" so grouping is exercised via currency.
+		mk := func(merchant string, amount int64, cur domain.Currency, key string) {
+			t.Helper()
+			if _, err := s.CreatePayment(ctx, domain.CreatePaymentInput{
+				MerchantID: merchant, CustomerID: "cus_vol", AmountMinor: amount, Currency: cur, Method: domain.MethodCard,
+			}, key); err != nil {
+				t.Fatalf("create: %v", err)
+			}
+		}
+		mk("mer_vol_a", 1000, domain.GBP, "idem-vol-1")
+		mk("mer_vol_a", 2500, domain.GBP, "idem-vol-2")
+		mk("mer_vol_a", 700, domain.USD, "idem-vol-3")
+		mk("mer_vol_b", 4000, domain.EUR, "idem-vol-4")
+		mk("mer_vol_b", 5013, domain.EUR, "idem-vol-5") // declined (.13) — must be excluded
+
+		rows, err := s.AdminVolumeReport(ctx, time.Now().UTC().Add(-24*time.Hour), time.Now().UTC().Add(24*time.Hour))
+		if err != nil {
+			t.Fatalf("report: %v", err)
+		}
+		got := map[string]domain.MerchantDailyVolume{}
+		var order []string
+		for _, r := range rows {
+			if r.MerchantID != "mer_vol_a" && r.MerchantID != "mer_vol_b" {
+				continue
+			}
+			k := r.MerchantID + "/" + string(r.Currency)
+			got[k] = r
+			order = append(order, k)
+			if r.Day == "" {
+				t.Fatalf("row %s has empty day", k)
+			}
+		}
+		want := map[string]struct {
+			total int64
+			count int64
+		}{
+			"mer_vol_a/GBP": {3500, 2},
+			"mer_vol_a/USD": {700, 1},
+			"mer_vol_b/EUR": {4000, 1}, // declined 5013 excluded
+		}
+		if len(got) != len(want) {
+			t.Fatalf("got %d rows (%v), want %d", len(got), order, len(want))
+		}
+		for k, w := range want {
+			r, ok := got[k]
+			if !ok {
+				t.Fatalf("missing row %s", k)
+			}
+			if r.TotalMinor != w.total || r.Count != w.count {
+				t.Fatalf("%s: total=%d count=%d, want total=%d count=%d", k, r.TotalMinor, r.Count, w.total, w.count)
+			}
+		}
+		// Ordering contract: (merchant_id, day, currency) ascending.
+		for i := 1; i < len(order); i++ {
+			if order[i-1] > order[i] {
+				t.Fatalf("rows out of order: %v", order)
+			}
+		}
+	})
+
+	t.Run("AdminVolumeReport_window_excludes_outside_range", func(t *testing.T) {
+		// Window entirely in the past -> none of the just-created payments appear.
+		rows, err := s.AdminVolumeReport(ctx, time.Now().UTC().Add(-48*time.Hour), time.Now().UTC().Add(-24*time.Hour))
+		if err != nil {
+			t.Fatalf("report: %v", err)
+		}
+		for _, r := range rows {
+			if r.MerchantID == "mer_vol_a" || r.MerchantID == "mer_vol_b" {
+				t.Fatalf("row %s/%s inside past-only window", r.MerchantID, r.Currency)
+			}
+		}
+	})
 }

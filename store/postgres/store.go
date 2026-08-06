@@ -232,18 +232,19 @@ func (s *Store) RefundPayment(ctx context.Context, paymentID string, amountMinor
 	}
 	defer tx.Rollback(ctx)
 
-	var currency string
+	var currency, merchantID string
 	var amount, refunded int64
-	// Conditional update inside the tx: only bump if the new sum fits and status is captured.
+	// Conditional update inside the tx: only bump if the new sum fits and the payment
+	// is refundable (captured or already settled).
 	err = tx.QueryRow(ctx, `
 		UPDATE payments
 		   SET refunded_minor = refunded_minor + $1, updated_at = $2
 		 WHERE id = $3
-		   AND status = 'captured'
+		   AND status IN ('captured','settled')
 		   AND refunded_minor + $1 <= amount_minor
-		RETURNING currency, amount_minor, refunded_minor`,
+		RETURNING currency, merchant_id, amount_minor, refunded_minor`,
 		amountMinor, now, paymentID,
-	).Scan(&currency, &amount, &refunded)
+	).Scan(&currency, &merchantID, &amount, &refunded)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Diagnose which failure mode.
 		cur, findErr := s.selectPaymentByID(ctx, paymentID)
@@ -253,7 +254,7 @@ func (s *Store) RefundPayment(ctx context.Context, paymentID string, amountMinor
 		if findErr != nil {
 			return domain.Refund{}, findErr
 		}
-		if cur.Status != domain.StatusCaptured {
+		if cur.Status != domain.StatusCaptured && cur.Status != domain.StatusSettled {
 			return domain.Refund{}, fmt.Errorf("%w: payment status is %s", store.ErrInvalidState, cur.Status)
 		}
 		return domain.Refund{}, store.ErrOverRefund
@@ -273,14 +274,16 @@ func (s *Store) RefundPayment(ctx context.Context, paymentID string, amountMinor
 	r := domain.Refund{
 		ID:          newID("re"),
 		PaymentID:   paymentID,
+		MerchantID:  merchantID,
 		AmountMinor: amountMinor,
 		Currency:    domain.Currency(currency),
+		Status:      domain.RefundCreated,
 		CreatedAt:   now,
 	}
 	_, err = tx.Exec(ctx, `
-		INSERT INTO refunds (id, payment_id, amount_minor, currency, created_at)
-		VALUES ($1,$2,$3,$4,$5)`,
-		r.ID, r.PaymentID, r.AmountMinor, string(r.Currency), r.CreatedAt,
+		INSERT INTO refunds (id, payment_id, merchant_id, amount_minor, currency, status, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		r.ID, r.PaymentID, r.MerchantID, r.AmountMinor, string(r.Currency), string(r.Status), r.CreatedAt,
 	)
 	if err != nil {
 		return domain.Refund{}, err
@@ -543,16 +546,191 @@ func (s *Store) AdminVolumeReport(ctx context.Context, from, to time.Time) ([]do
 	return out, rows.Err()
 }
 
-// ---------- Not yet implemented ----------
+// ---------- Settlement + balances (tasks 51-55, 60-66) ----------
 
-func (s *Store) SettlePayment(_ context.Context, _ string) (domain.Payment, error) {
-	return domain.Payment{}, errors.ErrUnsupported
+// creditBalance upserts the (merchant, currency) ledger row inside tx.
+// deltaBalance / deltaFees may be negative (refund settlement debits).
+func creditBalance(ctx context.Context, tx pgx.Tx, merchantID string, currency string, deltaBalance, deltaFees int64) error {
+	_, err := tx.Exec(ctx, `
+		INSERT INTO merchant_balances (merchant_id, currency, balance_minor, fees_minor)
+		VALUES ($1,$2,$3,$4)
+		ON CONFLICT (merchant_id, currency) DO UPDATE
+		   SET balance_minor = merchant_balances.balance_minor + EXCLUDED.balance_minor,
+		       fees_minor    = merchant_balances.fees_minor    + EXCLUDED.fees_minor`,
+		merchantID, currency, deltaBalance, deltaFees,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert balance: %w", err)
+	}
+	return nil
 }
-func (s *Store) SettleRefund(_ context.Context, _ string) (domain.Refund, error) {
-	return domain.Refund{}, errors.ErrUnsupported
+
+// SettlePayment — task 51. captured|pending -> settled; atomically credits the
+// merchant's balance with (amount - fee) and books the fee. Fee math lives in Go
+// (domain.GripeFee) so both backends produce the same number.
+func (s *Store) SettlePayment(ctx context.Context, paymentID string) (domain.Payment, error) {
+	now := time.Now().UTC()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return domain.Payment{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	var p domain.Payment
+	var cur, meth string
+	// Conditional flip: zero rows means the state moved (or never existed).
+	err = tx.QueryRow(ctx, `
+		UPDATE payments SET status = 'settled', updated_at = $1
+		 WHERE id = $2 AND status IN ('captured','pending')
+		RETURNING id, merchant_id, customer_id, amount_minor, currency, method, refunded_minor, created_at, updated_at`,
+		now, paymentID,
+	).Scan(&p.ID, &p.MerchantID, &p.CustomerID, &p.AmountMinor, &cur, &meth, &p.RefundedMinor, &p.CreatedAt, &p.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		existing, findErr := s.selectPaymentByID(ctx, paymentID)
+		if findErr != nil {
+			return domain.Payment{}, findErr // ErrNotFound or transport error
+		}
+		return domain.Payment{}, fmt.Errorf("%w: cannot settle from status %s (only captured or pending)", store.ErrInvalidState, existing.Status)
+	}
+	if err != nil {
+		return domain.Payment{}, err
+	}
+	p.Currency = domain.Currency(cur)
+	p.Method = domain.PaymentMethod(meth)
+	p.Status = domain.StatusSettled
+
+	fee := domain.GripeFee(p.AmountMinor)
+	if err := creditBalance(ctx, tx, p.MerchantID, cur, p.AmountMinor-fee, fee); err != nil {
+		return domain.Payment{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return domain.Payment{}, err
+	}
+	return p, nil
 }
-func (s *Store) GetMerchantBalances(_ context.Context, _ string) ([]domain.Balance, error) {
-	return nil, errors.ErrUnsupported
+
+// SettleRefund — task 60. created -> settled; atomically debits the merchant's
+// balance by (amount - fee) and returns Gripe's fee cut on the refunded slice.
+func (s *Store) SettleRefund(ctx context.Context, refundID string) (domain.Refund, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return domain.Refund{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	var r domain.Refund
+	var cur string
+	err = tx.QueryRow(ctx, `
+		UPDATE refunds SET status = 'settled'
+		 WHERE id = $1 AND status = 'created'
+		RETURNING id, payment_id, merchant_id, amount_minor, currency, created_at`,
+		refundID,
+	).Scan(&r.ID, &r.PaymentID, &r.MerchantID, &r.AmountMinor, &cur, &r.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Distinguish missing refund from already-settled.
+		var status string
+		findErr := s.pool.QueryRow(ctx, `SELECT status FROM refunds WHERE id = $1`, refundID).Scan(&status)
+		if errors.Is(findErr, pgx.ErrNoRows) {
+			return domain.Refund{}, store.ErrNotFound
+		}
+		if findErr != nil {
+			return domain.Refund{}, findErr
+		}
+		return domain.Refund{}, fmt.Errorf("%w: cannot settle refund from status %s (only created)", store.ErrInvalidState, status)
+	}
+	if err != nil {
+		return domain.Refund{}, err
+	}
+	r.Currency = domain.Currency(cur)
+	r.Status = domain.RefundSettled
+
+	fee := domain.GripeFee(r.AmountMinor)
+	// Debit: merchant gives back (amount - fee); Gripe returns its fee on the slice.
+	if err := creditBalance(ctx, tx, r.MerchantID, cur, -(r.AmountMinor - fee), -fee); err != nil {
+		return domain.Refund{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return domain.Refund{}, err
+	}
+	return r, nil
+}
+
+func (s *Store) GetMerchantBalances(ctx context.Context, merchantID string) ([]domain.Balance, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT currency, balance_minor, fees_minor
+		FROM merchant_balances
+		WHERE merchant_id = $1
+		ORDER BY currency ASC`,
+		merchantID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []domain.Balance
+	for rows.Next() {
+		var b domain.Balance
+		var cur string
+		if err := rows.Scan(&cur, &b.BalanceMinor, &b.FeesMinor); err != nil {
+			return nil, err
+		}
+		b.Currency = domain.Currency(cur)
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// AdminBalanceReport — task 61. Every merchant's per-currency balance + fees paid.
+func (s *Store) AdminBalanceReport(ctx context.Context) ([]domain.MerchantBalanceRow, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT merchant_id, currency, balance_minor, fees_minor
+		FROM merchant_balances
+		ORDER BY merchant_id ASC, currency ASC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []domain.MerchantBalanceRow
+	for rows.Next() {
+		var r domain.MerchantBalanceRow
+		var cur string
+		if err := rows.Scan(&r.MerchantID, &cur, &r.BalanceMinor, &r.FeesMinor); err != nil {
+			return nil, err
+		}
+		r.Currency = domain.Currency(cur)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// AdminRevenueReport — task 65. Gripe's fee revenue per currency, derived from
+// merchant_balances.fees_minor (no separate fee_ledger table by design).
+func (s *Store) AdminRevenueReport(ctx context.Context) ([]domain.CurrencyTotal, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT currency, sum(fees_minor)
+		FROM merchant_balances
+		GROUP BY currency
+		ORDER BY currency ASC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []domain.CurrencyTotal
+	for rows.Next() {
+		var r domain.CurrencyTotal
+		var cur string
+		if err := rows.Scan(&cur, &r.TotalMinor); err != nil {
+			return nil, err
+		}
+		r.Currency = domain.Currency(cur)
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // Compile-time checks.

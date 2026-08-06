@@ -28,9 +28,15 @@ type Store interface {
 	// Payments — writes carry an idempotency key so retries are safe.
 	CreatePayment(ctx context.Context, in domain.CreatePaymentInput, idempotencyKey string) (domain.Payment, error)
 	CapturePayment(ctx context.Context, paymentID string) (domain.Payment, error)
-	SettlePayment(ctx context.Context, paymentID string) (domain.Payment, error) // credits merchant balance atomically
+	// SettlePayment moves captured|pending -> settled and, atomically with the flip,
+	// credits merchant balance by (amount - GripeFee(amount)) and adds the fee to
+	// the merchant's fees-paid total. Any other starting state is ErrInvalidState.
+	SettlePayment(ctx context.Context, paymentID string) (domain.Payment, error)
 	RefundPayment(ctx context.Context, paymentID string, amountMinor int64, idempotencyKey string) (domain.Refund, error)
-	SettleRefund(ctx context.Context, refundID string) (domain.Refund, error) // debits merchant balance atomically
+	// SettleRefund moves a refund created -> settled and, atomically, debits merchant
+	// balance by (amount - GripeFee(amount)) and subtracts the fee from fees paid —
+	// Gripe returns its cut on refunds. Double-settle is ErrInvalidState.
+	SettleRefund(ctx context.Context, refundID string) (domain.Refund, error)
 
 	// Reads — actor-scoped. Admin sees everything, merchant sees own, customer sees own.
 	GetPayment(ctx context.Context, id string, actor domain.Actor) (domain.Payment, error)
@@ -44,6 +50,10 @@ type Store interface {
 	// excluding declined payments. from inclusive, to exclusive. Rows ordered by
 	// (merchant_id, day, currency) ascending.
 	AdminVolumeReport(ctx context.Context, from, to time.Time) ([]domain.MerchantDailyVolume, error)
+	// Every merchant's per-currency balance + fees paid, ordered (merchant_id, currency) ascending.
+	AdminBalanceReport(ctx context.Context) ([]domain.MerchantBalanceRow, error)
+	// Gripe's fee revenue per currency, ordered by currency ascending.
+	AdminRevenueReport(ctx context.Context) ([]domain.CurrencyTotal, error)
 
 	// Subscriptions.
 	CreateSubscription(ctx context.Context, in domain.CreateSubscriptionInput) (domain.Subscription, error)

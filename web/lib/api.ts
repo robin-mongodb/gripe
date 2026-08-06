@@ -30,6 +30,21 @@ export interface Page {
   next_cursor?: string;
 }
 
+export interface Balance {
+  currency: string;
+  balance_minor: number;
+  fees_minor: number;
+}
+
+export interface MerchantBalanceRow extends Balance {
+  merchant_id: string;
+}
+
+export interface CurrencyTotal {
+  currency: string;
+  total_minor: number;
+}
+
 export interface MerchantDailyVolume {
   merchant_id: string;
   day: string;

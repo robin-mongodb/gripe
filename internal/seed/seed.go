@@ -27,6 +27,7 @@ func DefaultOptions() Options {
 type Report struct {
 	Merchants     int
 	Payments      int
+	Settled       int
 	Subscriptions int
 	Duration      time.Duration
 }
@@ -53,7 +54,7 @@ func Run(ctx context.Context, s store.Store, opt Options) (Report, error) {
 			customerID := fmt.Sprintf("cus_seed_%03d_%03d", m, r.IntN(opt.CustomersPer))
 			amount := int64(r.IntN(19_000)) + 1_000 // 10.00 to 200.00
 			key := fmt.Sprintf("seed-p-%d-%d", m, i)
-			_, err := s.CreatePayment(ctx, domain.CreatePaymentInput{
+			p, err := s.CreatePayment(ctx, domain.CreatePaymentInput{
 				MerchantID:  merchantID,
 				CustomerID:  customerID,
 				AmountMinor: amount,
@@ -64,6 +65,15 @@ func Run(ctx context.Context, s store.Store, opt Options) (Report, error) {
 				return rep, fmt.Errorf("seed payment m=%d i=%d: %w", m, i, err)
 			}
 			rep.Payments++
+
+			// Settle ~60% of settleable payments so balances + fee revenue show up
+			// in the demo (captured or pending are the settleable states).
+			if (p.Status == domain.StatusCaptured || p.Status == domain.StatusPending) && r.IntN(10) < 6 {
+				if _, err := s.SettlePayment(ctx, p.ID); err != nil {
+					return rep, fmt.Errorf("seed settle m=%d i=%d: %w", m, i, err)
+				}
+				rep.Settled++
+			}
 		}
 
 		// Subscriptions with mixed cadences and start times (some due immediately).

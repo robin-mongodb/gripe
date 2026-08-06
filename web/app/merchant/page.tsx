@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { api, fmtMoney, type Page } from "../../lib/api";
+import { api, fmtMoney, type Balance, type Page } from "../../lib/api";
 
 // The "logged in" merchant is just a header value (auth is out of scope).
 // Persist it in the URL-free simplest place: component state with a default from the seed.
 export default function MerchantPage() {
   const [merchantId, setMerchantId] = useState("mer_seed_000");
   const [page, setPage] = useState<Page | null>(null);
+  const [balances, setBalances] = useState<Balance[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -22,6 +23,10 @@ export default function MerchantPage() {
         setPage((prev) =>
           cursor && prev ? { items: [...prev.items, ...p.items], next_cursor: p.next_cursor } : p,
         );
+        if (!cursor) {
+          const b = await api<{ items: Balance[] }>("/balances", { role: "merchant", actorId: merchantId });
+          setBalances(b.items);
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {
@@ -49,6 +54,23 @@ export default function MerchantPage() {
         </label>
       </div>
       {error && <p className="mt-4 text-sm text-red-600">{error}</p>}
+      {/* One balance row per currency (tasks 56/67). Settled funds net of Gripe's 3% fee. */}
+      <div className="mt-4 grid gap-4 sm:grid-cols-3">
+        {balances.map((b) => (
+          <div key={b.currency} className="rounded-lg border bg-white p-4 shadow-sm">
+            <div className="text-xs uppercase text-neutral-500">{b.currency} balance</div>
+            <div className="mt-1 text-2xl font-semibold">{fmtMoney(b.balance_minor, b.currency)}</div>
+            <div className="mt-1 text-xs text-neutral-500">
+              fees paid to Gripe: {fmtMoney(b.fees_minor, b.currency)}
+            </div>
+          </div>
+        ))}
+        {balances.length === 0 && (
+          <div className="rounded-lg border bg-white p-4 text-sm text-neutral-500 shadow-sm sm:col-span-3">
+            No settled funds yet — balances appear once payments settle.
+          </div>
+        )}
+      </div>
       <div className="mt-4 overflow-x-auto rounded-lg border bg-white shadow-sm">
         <table className="w-full text-sm">
           <thead className="border-b bg-neutral-50 text-left text-neutral-600">

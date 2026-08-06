@@ -46,6 +46,13 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /v1/payments", actorMiddleware(http.HandlerFunc(s.listPayments)))
 	s.mux.Handle("GET /v1/payments/{id}", actorMiddleware(http.HandlerFunc(s.getPayment)))
 	s.mux.Handle("GET /v1/reports/volume", actorMiddleware(http.HandlerFunc(s.adminVolumeReport)))
+	s.mux.Handle("GET /v1/reports/balances", actorMiddleware(http.HandlerFunc(s.adminBalanceReport)))
+	s.mux.Handle("GET /v1/reports/revenue", actorMiddleware(http.HandlerFunc(s.adminRevenueReport)))
+	s.mux.Handle("GET /v1/balances", actorMiddleware(http.HandlerFunc(s.getBalances)))
+
+	// Settlement — admin-only platform ops; the store state machine guards retries.
+	s.mux.Handle("POST /v1/payments/{id}/settle", actorMiddleware(http.HandlerFunc(s.settlePayment)))
+	s.mux.Handle("POST /v1/refunds/{id}/settle", actorMiddleware(http.HandlerFunc(s.settleRefund)))
 
 	// Writes: idempotency is only useful when the store can persist it.
 	if idem != nil {

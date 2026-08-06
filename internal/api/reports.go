@@ -54,3 +54,35 @@ func (s *Server) adminVolumeReport(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": rows})
 }
+
+// adminBalanceReport — task 57. Every merchant's per-currency balance + fees paid.
+func (s *Server) adminBalanceReport(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	rows, err := s.store.AdminBalanceReport(r.Context())
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if rows == nil {
+		rows = []domain.MerchantBalanceRow{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": rows})
+}
+
+// adminRevenueReport — tasks 57/68. Gripe's cut, split by currency.
+func (s *Server) adminRevenueReport(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	rows, err := s.store.AdminRevenueReport(r.Context())
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if rows == nil {
+		rows = []domain.CurrencyTotal{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": rows})
+}

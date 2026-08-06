@@ -631,6 +631,229 @@ func RunStoreContract(t *testing.T, s store.Store) {
 		}
 	})
 
+	// --- Settlement + balances (tasks 51-55, 60-66) ---
+
+	// pay creates a card payment (lands captured) and fails the test on error.
+	pay := func(t *testing.T, merchant string, amount int64, cur domain.Currency, key string) domain.Payment {
+		t.Helper()
+		p, err := s.CreatePayment(ctx, domain.CreatePaymentInput{
+			MerchantID: merchant, CustomerID: "cus_bal", AmountMinor: amount, Currency: cur, Method: domain.MethodCard,
+		}, key)
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		return p
+	}
+	balance := func(t *testing.T, merchant string, cur domain.Currency) domain.Balance {
+		t.Helper()
+		bals, err := s.GetMerchantBalances(ctx, merchant)
+		if err != nil {
+			t.Fatalf("balances: %v", err)
+		}
+		for _, b := range bals {
+			if b.Currency == cur {
+				return b
+			}
+		}
+		return domain.Balance{Currency: cur}
+	}
+
+	t.Run("SettlePayment_credits_balance_minus_fee", func(t *testing.T) {
+		p := pay(t, "mer_bal_a", 10_000, domain.GBP, "idem-bal-1")
+		settled, err := s.SettlePayment(ctx, p.ID)
+		if err != nil {
+			t.Fatalf("settle: %v", err)
+		}
+		if settled.Status != domain.StatusSettled {
+			t.Fatalf("status = %s, want settled", settled.Status)
+		}
+		b := balance(t, "mer_bal_a", domain.GBP)
+		fee := domain.GripeFee(10_000) // 300
+		if b.BalanceMinor != 10_000-fee || b.FeesMinor != fee {
+			t.Fatalf("balance=%d fees=%d, want %d/%d", b.BalanceMinor, b.FeesMinor, 10_000-fee, fee)
+		}
+	})
+
+	t.Run("SettlePayment_double_settle_rejected", func(t *testing.T) {
+		p := pay(t, "mer_bal_b", 5_000, domain.GBP, "idem-bal-2")
+		if _, err := s.SettlePayment(ctx, p.ID); err != nil {
+			t.Fatalf("settle: %v", err)
+		}
+		if _, err := s.SettlePayment(ctx, p.ID); !errors.Is(err, store.ErrInvalidState) {
+			t.Fatalf("double settle: want ErrInvalidState, got %v", err)
+		}
+		// Balance credited exactly once.
+		if b := balance(t, "mer_bal_b", domain.GBP); b.BalanceMinor != 5_000-domain.GripeFee(5_000) {
+			t.Fatalf("balance=%d credited more than once?", b.BalanceMinor)
+		}
+	})
+
+	t.Run("SettlePayment_state_machine", func(t *testing.T) {
+		// declined -> invalid
+		d := pay(t, "mer_bal_c", 5_013, domain.GBP, "idem-bal-3")
+		if _, err := s.SettlePayment(ctx, d.ID); !errors.Is(err, store.ErrInvalidState) {
+			t.Fatalf("declined: want ErrInvalidState, got %v", err)
+		}
+		// authorized (direct debit) -> invalid, must capture first
+		dd, err := s.CreatePayment(ctx, domain.CreatePaymentInput{
+			MerchantID: "mer_bal_c", CustomerID: "cus_bal", AmountMinor: 2_000, Currency: domain.GBP, Method: domain.MethodDirectDebit,
+		}, "idem-bal-4")
+		if err != nil {
+			t.Fatalf("create dd: %v", err)
+		}
+		if _, err := s.SettlePayment(ctx, dd.ID); !errors.Is(err, store.ErrInvalidState) {
+			t.Fatalf("authorized: want ErrInvalidState, got %v", err)
+		}
+		// pending (bank transfer) -> settles directly (task 15's async settle)
+		bt, err := s.CreatePayment(ctx, domain.CreatePaymentInput{
+			MerchantID: "mer_bal_c", CustomerID: "cus_bal", AmountMinor: 3_000, Currency: domain.GBP, Method: domain.MethodBankTransfer,
+		}, "idem-bal-5")
+		if err != nil {
+			t.Fatalf("create bt: %v", err)
+		}
+		if _, err := s.SettlePayment(ctx, bt.ID); err != nil {
+			t.Fatalf("pending settle: %v", err)
+		}
+		// missing -> not found
+		if _, err := s.SettlePayment(ctx, "pay_missing"); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("missing: want ErrNotFound, got %v", err)
+		}
+	})
+
+	t.Run("Balance_invariant_sum_minus_fees", func(t *testing.T) {
+		// Tasks 53/55: N settled payments -> balance == sum(amount) - sum(fees).
+		amounts := []int64{1_000, 2_050, 33, 9_999, 150}
+		var wantBal, wantFees int64
+		for i, a := range amounts {
+			p := pay(t, "mer_inv", a, domain.USD, fmt.Sprintf("idem-inv-%d", i))
+			if _, err := s.SettlePayment(ctx, p.ID); err != nil {
+				t.Fatalf("settle %d: %v", a, err)
+			}
+			wantBal += a - domain.GripeFee(a)
+			wantFees += domain.GripeFee(a)
+		}
+		if b := balance(t, "mer_inv", domain.USD); b.BalanceMinor != wantBal || b.FeesMinor != wantFees {
+			t.Fatalf("balance=%d fees=%d, want %d/%d", b.BalanceMinor, b.FeesMinor, wantBal, wantFees)
+		}
+	})
+
+	t.Run("SettleRefund_debits_balance_and_returns_fee", func(t *testing.T) {
+		p := pay(t, "mer_ref", 10_000, domain.EUR, "idem-ref-1")
+		if _, err := s.SettlePayment(ctx, p.ID); err != nil {
+			t.Fatalf("settle: %v", err)
+		}
+		r, err := s.RefundPayment(ctx, p.ID, 4_000, "idem-ref-2")
+		if err != nil {
+			t.Fatalf("refund: %v", err)
+		}
+		if r.Status != domain.RefundCreated {
+			t.Fatalf("refund status = %s, want created", r.Status)
+		}
+		if r.Currency != p.Currency {
+			t.Fatalf("refund currency %s != payment currency %s", r.Currency, p.Currency) // task 63
+		}
+		settled, err := s.SettleRefund(ctx, r.ID)
+		if err != nil {
+			t.Fatalf("settle refund: %v", err)
+		}
+		if settled.Status != domain.RefundSettled {
+			t.Fatalf("refund status = %s, want settled", settled.Status)
+		}
+		// credit (10000 - 300) then debit (4000 - 120): balance 5820, fees 300-120=180.
+		wantBal := (10_000 - domain.GripeFee(10_000)) - (4_000 - domain.GripeFee(4_000))
+		wantFees := domain.GripeFee(10_000) - domain.GripeFee(4_000)
+		if b := balance(t, "mer_ref", domain.EUR); b.BalanceMinor != wantBal || b.FeesMinor != wantFees {
+			t.Fatalf("balance=%d fees=%d, want %d/%d", b.BalanceMinor, b.FeesMinor, wantBal, wantFees)
+		}
+		// Double settle -> invalid, debit applied exactly once.
+		if _, err := s.SettleRefund(ctx, r.ID); !errors.Is(err, store.ErrInvalidState) {
+			t.Fatalf("double settle refund: want ErrInvalidState, got %v", err)
+		}
+		if b := balance(t, "mer_ref", domain.EUR); b.BalanceMinor != wantBal {
+			t.Fatalf("balance=%d, debited more than once?", b.BalanceMinor)
+		}
+		if _, err := s.SettleRefund(ctx, "ref_missing"); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("missing refund: want ErrNotFound, got %v", err)
+		}
+	})
+
+	t.Run("Balances_per_currency_never_mix", func(t *testing.T) {
+		// Task 62/66: three currencies -> three independent balances.
+		for i, cur := range []domain.Currency{domain.USD, domain.GBP, domain.EUR} {
+			p := pay(t, "mer_multi", int64(1_000*(i+1)), cur, fmt.Sprintf("idem-multi-%d", i))
+			if _, err := s.SettlePayment(ctx, p.ID); err != nil {
+				t.Fatalf("settle %s: %v", cur, err)
+			}
+		}
+		bals, err := s.GetMerchantBalances(ctx, "mer_multi")
+		if err != nil {
+			t.Fatalf("balances: %v", err)
+		}
+		if len(bals) != 3 {
+			t.Fatalf("got %d balance rows, want 3: %+v", len(bals), bals)
+		}
+		want := map[domain.Currency]int64{
+			domain.USD: 1_000 - domain.GripeFee(1_000),
+			domain.GBP: 2_000 - domain.GripeFee(2_000),
+			domain.EUR: 3_000 - domain.GripeFee(3_000),
+		}
+		for _, b := range bals {
+			if b.BalanceMinor != want[b.Currency] {
+				t.Fatalf("%s balance = %d, want %d", b.Currency, b.BalanceMinor, want[b.Currency])
+			}
+		}
+	})
+
+	t.Run("AdminBalanceReport_lists_all_merchants_ordered", func(t *testing.T) {
+		rows, err := s.AdminBalanceReport(ctx)
+		if err != nil {
+			t.Fatalf("report: %v", err)
+		}
+		seen := map[string]bool{}
+		var keys []string
+		for _, r := range rows {
+			k := r.MerchantID + "/" + string(r.Currency)
+			seen[k] = true
+			keys = append(keys, k)
+		}
+		for _, k := range []string{"mer_bal_a/GBP", "mer_inv/USD", "mer_multi/USD", "mer_multi/GBP", "mer_multi/EUR"} {
+			if !seen[k] {
+				t.Fatalf("missing row %s in %v", k, keys)
+			}
+		}
+		for i := 1; i < len(keys); i++ {
+			if keys[i-1] > keys[i] {
+				t.Fatalf("rows out of order: %v", keys)
+			}
+		}
+	})
+
+	t.Run("AdminRevenueReport_sums_fees_per_currency", func(t *testing.T) {
+		before, err := s.AdminRevenueReport(ctx)
+		if err != nil {
+			t.Fatalf("report: %v", err)
+		}
+		rev := func(rows []domain.CurrencyTotal, cur domain.Currency) int64 {
+			for _, r := range rows {
+				if r.Currency == cur {
+					return r.TotalMinor
+				}
+			}
+			return 0
+		}
+		p := pay(t, "mer_rev", 20_000, domain.GBP, "idem-rev-1")
+		if _, err := s.SettlePayment(ctx, p.ID); err != nil {
+			t.Fatalf("settle: %v", err)
+		}
+		after, err := s.AdminRevenueReport(ctx)
+		if err != nil {
+			t.Fatalf("report: %v", err)
+		}
+		if delta := rev(after, domain.GBP) - rev(before, domain.GBP); delta != domain.GripeFee(20_000) {
+			t.Fatalf("GBP revenue delta = %d, want %d", delta, domain.GripeFee(20_000))
+		}
+	})
+
 	t.Run("AdminVolumeReport_window_excludes_outside_range", func(t *testing.T) {
 		// Window entirely in the past -> none of the just-created payments appear.
 		rows, err := s.AdminVolumeReport(ctx, time.Now().UTC().Add(-48*time.Hour), time.Now().UTC().Add(-24*time.Hour))

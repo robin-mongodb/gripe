@@ -53,6 +53,11 @@ func (s *Server) createPayment(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "merchant_id required"})
 		return
 	}
+	// Task 58: reject unknown currencies at the boundary, before the store sees them.
+	if !domain.Currency(req.Currency).Valid() {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "currency must be one of USD, GBP, EUR"})
+		return
+	}
 
 	key := r.Header.Get("Idempotency-Key") // middleware already required this on POSTs
 	p, err := s.store.CreatePayment(r.Context(), domain.CreatePaymentInput{

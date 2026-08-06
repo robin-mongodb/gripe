@@ -28,6 +28,7 @@ const (
 	colIdemKeys = "idempotency_keys"
 	colRefunds  = "refunds"
 	colSubs     = "subscriptions"
+	colBalances = "merchant_balances"
 
 	// Amounts ending in .13 (minor units mod 100 == 13) are mock-declined.
 	// Only relevant to card / Apple Pay / Google Pay.
@@ -81,6 +82,18 @@ func (s *Store) ensureIndexes(ctx context.Context) error {
 	})
 	if err != nil {
 		return fmt.Errorf("subscriptions indexes: %w", err)
+	}
+	// One ledger row per (merchant, currency); the unique index makes the $inc-with-upsert
+	// in settle paths race-safe — concurrent first-settles collide here instead of
+	// creating duplicate rows.
+	_, err = s.db.Collection(colBalances).Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{
+			Keys:    bson.D{{Key: "merchant_id", Value: 1}, {Key: "currency", Value: 1}},
+			Options: options.Index().SetUnique(true),
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("merchant_balances indexes: %w", err)
 	}
 	// TTL on expires_at vacuums expired idempotency records automatically.
 	_, err = s.db.Collection(colIdemKeys).Indexes().CreateMany(ctx, []mongo.IndexModel{
@@ -258,8 +271,10 @@ func (s *Store) GetPayment(ctx context.Context, id string, actor domain.Actor) (
 type refundDoc struct {
 	ID          string    `bson:"_id"`
 	PaymentID   string    `bson:"payment_id"`
+	MerchantID  string    `bson:"merchant_id"`
 	AmountMinor int64     `bson:"amount_minor"`
 	Currency    string    `bson:"currency"`
+	Status      string    `bson:"status"`
 	CreatedAt   time.Time `bson:"created_at"`
 }
 
@@ -267,8 +282,10 @@ func (r refundDoc) toDomain() domain.Refund {
 	return domain.Refund{
 		ID:          r.ID,
 		PaymentID:   r.PaymentID,
+		MerchantID:  r.MerchantID,
 		AmountMinor: r.AmountMinor,
 		Currency:    domain.Currency(r.Currency),
+		Status:      domain.RefundStatus(r.Status),
 		CreatedAt:   r.CreatedAt,
 	}
 }
@@ -284,11 +301,12 @@ func (s *Store) RefundPayment(ctx context.Context, paymentID string, amountMinor
 		return domain.Refund{}, fmt.Errorf("%w: refund amount must be > 0", store.ErrInvalidState)
 	}
 
-	// Conditional: only touch the payment if the refund fits and the payment is captured.
-	// ponytail: single conditional update; upgrade to a multi-doc txn when SettleRefund lands (task 52).
+	// Conditional: only touch the payment if the refund fits and the payment is
+	// captured or settled (task 52: settled payments are refundable; the balance
+	// debit happens later in SettleRefund).
 	filter := bson.M{
 		"_id":    paymentID,
-		"status": string(domain.StatusCaptured),
+		"status": bson.M{"$in": bson.A{string(domain.StatusCaptured), string(domain.StatusSettled)}},
 		"$expr": bson.M{
 			"$lte": bson.A{
 				bson.M{"$add": bson.A{"$refunded_minor", amountMinor}},
@@ -316,7 +334,7 @@ func (s *Store) RefundPayment(ctx context.Context, paymentID string, amountMinor
 		if findErr != nil {
 			return domain.Refund{}, findErr
 		}
-		if current.Status != string(domain.StatusCaptured) {
+		if current.Status != string(domain.StatusCaptured) && current.Status != string(domain.StatusSettled) {
 			return domain.Refund{}, fmt.Errorf("%w: payment status is %s", store.ErrInvalidState, current.Status)
 		}
 		// Must be the over-refund case.
@@ -337,8 +355,10 @@ func (s *Store) RefundPayment(ctx context.Context, paymentID string, amountMinor
 	r := refundDoc{
 		ID:          newID("re"),
 		PaymentID:   paymentID,
+		MerchantID:  updated.MerchantID,
 		AmountMinor: amountMinor,
-		Currency:    updated.Currency,
+		Currency:    updated.Currency, // task 63: refund currency is pinned to the payment's — never caller-supplied
+		Status:      string(domain.RefundCreated),
 		CreatedAt:   now,
 	}
 	if _, err := s.db.Collection(colRefunds).InsertOne(ctx, r); err != nil {
@@ -386,11 +406,109 @@ func (s *Store) CapturePayment(ctx context.Context, paymentID string) (domain.Pa
 	}
 	return updated.toDomain(), nil
 }
-func (s *Store) SettlePayment(_ context.Context, _ string) (domain.Payment, error) {
-	return domain.Payment{}, errors.ErrUnsupported
+// ---------- Settlement + balances (tasks 51/52/53) ----------
+
+// balanceDoc is one (merchant, currency) ledger row. Money stays int64 minor units
+// (task 18 decision) — $inc on int64 is atomic and exact, no Decimal128 needed at 2dp.
+type balanceDoc struct {
+	MerchantID   string `bson:"merchant_id"`
+	Currency     string `bson:"currency"`
+	BalanceMinor int64  `bson:"balance_minor"`
+	FeesMinor    int64  `bson:"fees_minor"`
 }
-func (s *Store) SettleRefund(_ context.Context, _ string) (domain.Refund, error) {
-	return domain.Refund{}, errors.ErrUnsupported
+
+// applyBalanceDelta upserts the (merchant, currency) row and $inc's both counters.
+// The unique index on (merchant_id, currency) turns concurrent upsert races into a
+// retryable duplicate-key error; one retry is enough because the row then exists.
+func (s *Store) applyBalanceDelta(ctx context.Context, merchantID, currency string, balanceDelta, feesDelta int64) error {
+	update := bson.M{"$inc": bson.M{"balance_minor": balanceDelta, "fees_minor": feesDelta}}
+	filter := bson.M{"merchant_id": merchantID, "currency": currency}
+	_, err := s.db.Collection(colBalances).UpdateOne(ctx, filter, update, options.UpdateOne().SetUpsert(true))
+	if mongo.IsDuplicateKeyError(err) {
+		_, err = s.db.Collection(colBalances).UpdateOne(ctx, filter, update)
+	}
+	return err
+}
+
+// SettlePayment — task 51 (UC on settle). captured|pending -> settled, then credit
+// the merchant's per-currency balance with (amount - fee) and record the fee.
+//
+// The conditional status flip is the exactly-once guard: only the caller that wins
+// the flip performs the balance $inc, so double-settle can never double-credit.
+//
+// ponytail: flip-then-inc is two writes on a standalone Mongo (testcontainers runs
+// mongo:7 without a replica set, so no multi-doc txns). Crash window: process dies
+// after the flip but before the $inc -> payment reads settled, balance missing the
+// credit. Atlas in prod IS a replica set — upgrade path is wrapping both writes in
+// client.StartSession + WithTransaction and deleting this comment.
+func (s *Store) SettlePayment(ctx context.Context, paymentID string) (domain.Payment, error) {
+	now := time.Now().UTC()
+	filter := bson.M{
+		"_id":    paymentID,
+		"status": bson.M{"$in": bson.A{string(domain.StatusCaptured), string(domain.StatusPending)}},
+	}
+	update := bson.M{"$set": bson.M{"status": string(domain.StatusSettled), "updated_at": now}}
+
+	res := s.db.Collection(colPayments).FindOneAndUpdate(ctx, filter, update,
+		options.FindOneAndUpdate().SetReturnDocument(options.After))
+	var updated paymentDoc
+	err := res.Decode(&updated)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		// Zero matches: missing, or an unsettleable state. Probe to tell which.
+		var current paymentDoc
+		findErr := s.db.Collection(colPayments).FindOne(ctx, bson.M{"_id": paymentID}).Decode(&current)
+		if errors.Is(findErr, mongo.ErrNoDocuments) {
+			return domain.Payment{}, store.ErrNotFound
+		}
+		if findErr != nil {
+			return domain.Payment{}, findErr
+		}
+		return domain.Payment{}, fmt.Errorf("%w: cannot settle from status %s (only captured or pending)", store.ErrInvalidState, current.Status)
+	}
+	if err != nil {
+		return domain.Payment{}, err
+	}
+
+	fee := domain.GripeFee(updated.AmountMinor)
+	if err := s.applyBalanceDelta(ctx, updated.MerchantID, updated.Currency, updated.AmountMinor-fee, fee); err != nil {
+		return domain.Payment{}, fmt.Errorf("settle balance credit: %w", err)
+	}
+	return updated.toDomain(), nil
+}
+
+// SettleRefund — task 52. Refund created -> settled, then debit the merchant's
+// balance by (amount - fee) and hand the fee back (Gripe returns its cut on refunds).
+// Same exactly-once shape as SettlePayment: the conditional flip guards the $inc.
+//
+// ponytail: same standalone-Mongo crash window as SettlePayment; same txn upgrade path.
+func (s *Store) SettleRefund(ctx context.Context, refundID string) (domain.Refund, error) {
+	filter := bson.M{"_id": refundID, "status": string(domain.RefundCreated)}
+	update := bson.M{"$set": bson.M{"status": string(domain.RefundSettled)}}
+
+	res := s.db.Collection(colRefunds).FindOneAndUpdate(ctx, filter, update,
+		options.FindOneAndUpdate().SetReturnDocument(options.After))
+	var updated refundDoc
+	err := res.Decode(&updated)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		var current refundDoc
+		findErr := s.db.Collection(colRefunds).FindOne(ctx, bson.M{"_id": refundID}).Decode(&current)
+		if errors.Is(findErr, mongo.ErrNoDocuments) {
+			return domain.Refund{}, store.ErrNotFound
+		}
+		if findErr != nil {
+			return domain.Refund{}, findErr
+		}
+		return domain.Refund{}, fmt.Errorf("%w: refund status is %s (only created can settle)", store.ErrInvalidState, current.Status)
+	}
+	if err != nil {
+		return domain.Refund{}, err
+	}
+
+	fee := domain.GripeFee(updated.AmountMinor)
+	if err := s.applyBalanceDelta(ctx, updated.MerchantID, updated.Currency, -(updated.AmountMinor - fee), -fee); err != nil {
+		return domain.Refund{}, fmt.Errorf("settle refund balance debit: %w", err)
+	}
+	return updated.toDomain(), nil
 }
 // ListMerchantPayments — task 22 (UC-5). Merchant sees own payments, newest first.
 // Cursor is base64-of-{created_at,id}; opaque to callers. Page size is capped at listPageMax.
@@ -514,8 +632,88 @@ func decodeCursor(c domain.Cursor) (paymentCursor, error) {
 	}
 	return out, nil
 }
-func (s *Store) GetMerchantBalances(_ context.Context, _ string) ([]domain.Balance, error) {
-	return nil, errors.ErrUnsupported
+// GetMerchantBalances — task 53. One row per currency the merchant has ever settled in.
+// Served by the prefix of the unique (merchant_id, currency) index — covered lookup + sort.
+func (s *Store) GetMerchantBalances(ctx context.Context, merchantID string) ([]domain.Balance, error) {
+	cur, err := s.db.Collection(colBalances).Find(ctx,
+		bson.M{"merchant_id": merchantID},
+		options.Find().SetSort(bson.D{{Key: "currency", Value: 1}}))
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+
+	var docs []balanceDoc
+	if err := cur.All(ctx, &docs); err != nil {
+		return nil, err
+	}
+	out := make([]domain.Balance, len(docs))
+	for i, d := range docs {
+		out[i] = domain.Balance{
+			Currency:     domain.Currency(d.Currency),
+			BalanceMinor: d.BalanceMinor,
+			FeesMinor:    d.FeesMinor,
+		}
+	}
+	return out, nil
+}
+
+// AdminBalanceReport — every merchant's per-currency balance + fees, ordered
+// (merchant_id, currency) asc. The sort IS the unique index — no in-memory sort.
+func (s *Store) AdminBalanceReport(ctx context.Context) ([]domain.MerchantBalanceRow, error) {
+	cur, err := s.db.Collection(colBalances).Find(ctx, bson.M{},
+		options.Find().SetSort(bson.D{{Key: "merchant_id", Value: 1}, {Key: "currency", Value: 1}}))
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+
+	var docs []balanceDoc
+	if err := cur.All(ctx, &docs); err != nil {
+		return nil, err
+	}
+	out := make([]domain.MerchantBalanceRow, len(docs))
+	for i, d := range docs {
+		out[i] = domain.MerchantBalanceRow{
+			MerchantID:   d.MerchantID,
+			Currency:     domain.Currency(d.Currency),
+			BalanceMinor: d.BalanceMinor,
+			FeesMinor:    d.FeesMinor,
+		}
+	}
+	return out, nil
+}
+
+// AdminRevenueReport — Gripe's fee take per currency. Revenue is derived from the
+// merchant_balances ledger (fees_minor already nets out refund fee returns), so a
+// single $group over that small collection is the whole report — no fee_ledger,
+// no re-scan of payments.
+func (s *Store) AdminRevenueReport(ctx context.Context) ([]domain.CurrencyTotal, error) {
+	pipeline := mongo.Pipeline{
+		{{Key: "$group", Value: bson.M{
+			"_id":         "$currency",
+			"total_minor": bson.M{"$sum": "$fees_minor"},
+		}}},
+		{{Key: "$sort", Value: bson.D{{Key: "_id", Value: 1}}}},
+	}
+	cur, err := s.db.Collection(colBalances).Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("revenue report aggregate: %w", err)
+	}
+	defer cur.Close(ctx)
+
+	var rows []struct {
+		Currency   string `bson:"_id"`
+		TotalMinor int64  `bson:"total_minor"`
+	}
+	if err := cur.All(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("revenue report decode: %w", err)
+	}
+	out := make([]domain.CurrencyTotal, len(rows))
+	for i, r := range rows {
+		out[i] = domain.CurrencyTotal{Currency: domain.Currency(r.Currency), TotalMinor: r.TotalMinor}
+	}
+	return out, nil
 }
 
 // AdminVolumeReport — admin aggregate: non-declined payment volume grouped by

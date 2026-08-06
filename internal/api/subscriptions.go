@@ -52,6 +52,11 @@ func (s *Server) createSubscription(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "merchant_id required"})
 		return
 	}
+	// Task 58: reject unknown currencies at the boundary, before the store sees them.
+	if !domain.Currency(req.Currency).Valid() {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "currency must be one of USD, GBP, EUR"})
+		return
+	}
 
 	var start time.Time
 	if req.StartAt != "" {

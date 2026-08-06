@@ -66,12 +66,21 @@ type CreatePaymentInput struct {
 	Method      PaymentMethod `json:"method"`
 }
 
+type RefundStatus string
+
+const (
+	RefundCreated RefundStatus = "created"
+	RefundSettled RefundStatus = "settled" // balance debit applied
+)
+
 type Refund struct {
-	ID          string    `json:"id"`
-	PaymentID   string    `json:"payment_id"`
-	AmountMinor int64     `json:"amount_minor"`
-	Currency    Currency  `json:"currency"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID          string       `json:"id"`
+	PaymentID   string       `json:"payment_id"`
+	MerchantID  string       `json:"merchant_id"`
+	AmountMinor int64        `json:"amount_minor"`
+	Currency    Currency     `json:"currency"`
+	Status      RefundStatus `json:"status"`
+	CreatedAt   time.Time    `json:"created_at"`
 }
 
 type SubscriptionCadence string
@@ -165,10 +174,27 @@ type Page struct {
 	NextCursor Cursor    `json:"next_cursor,omitempty"`
 }
 
-// Balance is a per-currency ledger row for a merchant.
+// Balance is a per-currency ledger row for a merchant. BalanceMinor is what the
+// merchant is owed (settled amounts net of fees and settled refunds); FeesMinor is
+// the lifetime fee total the merchant has paid to Gripe in that currency.
 type Balance struct {
 	Currency     Currency `json:"currency"`
 	BalanceMinor int64    `json:"balance_minor"`
+	FeesMinor    int64    `json:"fees_minor"`
+}
+
+// MerchantBalanceRow is one row of the admin balance report: Balance plus who owns it.
+type MerchantBalanceRow struct {
+	MerchantID   string   `json:"merchant_id"`
+	Currency     Currency `json:"currency"`
+	BalanceMinor int64    `json:"balance_minor"`
+	FeesMinor    int64    `json:"fees_minor"`
+}
+
+// CurrencyTotal is one row of the Gripe revenue report.
+type CurrencyTotal struct {
+	Currency   Currency `json:"currency"`
+	TotalMinor int64    `json:"total_minor"`
 }
 
 // MerchantDailyVolume is one row of the admin volume report: non-declined payment

@@ -64,6 +64,7 @@ func main() {
 	log.Info("seed done",
 		"merchants", rep.Merchants,
 		"payments", rep.Payments,
+		"settled", rep.Settled,
 		"subscriptions", rep.Subscriptions,
 		"duration", rep.Duration)
 }

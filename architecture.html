@@ -85,17 +85,24 @@
   <rect x="850" y="120" width="220" height="90" class="box" fill="var(--aws)"/>
   <text x="960" y="150" text-anchor="middle" class="title">RDS PostgreSQL</text>
   <text x="960" y="170" text-anchor="middle" class="small">managed · single instance · SSL</text>
-  <text x="960" y="188" text-anchor="middle" class="small">numeric(19,4) · pgvector (parked)</text>
+  <text x="960" y="188" text-anchor="middle" class="small">bigint minor units · pgvector (parked)</text>
 
   <!-- Atlas -->
   <rect x="850" y="240" width="220" height="90" class="box" fill="var(--atlas)"/>
   <text x="960" y="270" text-anchor="middle" class="title">MongoDB Atlas</text>
   <text x="960" y="290" text-anchor="middle" class="small">managed · TLS</text>
-  <text x="960" y="308" text-anchor="middle" class="small">Decimal128 · Vector Search (parked)</text>
+  <text x="960" y="308" text-anchor="middle" class="small">int64 minor units · Vector Search (parked)</text>
 
   <!-- AWS group -->
   <rect x="820" y="90" width="290" height="260" class="grp" style="fill:transparent"/>
   <text x="835" y="112" class="title">Managed (AWS + Atlas)</text>
+
+  <!-- loadgen (perf phase only) -->
+  <rect x="860" y="430" width="250" height="72" class="grp" style="fill:transparent"/>
+  <text x="985" y="456" text-anchor="middle" class="title">loadgen EC2 (perf only)</text>
+  <text x="985" y="473" text-anchor="middle" class="small">k6 → api :8080 (bypasses nginx)</text>
+  <text x="985" y="488" text-anchor="middle" class="small">enable_loadgen=true in TF</text>
+  <path class="edge edge-dashed" d="M858,450 C660,440 580,280 544,225"/>
 
   <!-- Edges -->
   <!-- user -> nginx -->

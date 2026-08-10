@@ -27,6 +27,14 @@ Deploy target for workers may move to Fargate later — `docker-compose` for v1,
 
 Neither backend runs on the EC2 host — DB load hits AWS/Atlas over the network, which is the load-comparison story.
 
+## Perf load generator (perf phase only)
+
+A second EC2 (`gripe-loadgen`, `t3.medium`, `deploy/terraform/loadgen.tf`, off by default via
+`enable_loadgen`) runs k6 against the app box's **api port 8080 directly** — bypassing nginx,
+whose 100 r/s rate limit would dominate the measurement. Separate machine so the load generator
+never steals CPU from the system under test; same subnet so the client→api hop is constant and
+the only variable is the database. Scenarios live in `perf/scenarios.js`.
+
 ## Data flow
 
 1. **Create payment.** Client → `nginx` → `api` → `Store.CreatePayment(ctx, input, idempotencyKey)` → RDS PostgreSQL or Atlas.
@@ -42,7 +50,7 @@ The two workers hit each DB with reads + updates, which mixes the workload beyon
 - **Store interface is use-case-shaped**, not CRUD-shaped (see CLAUDE.md).
 - **Contract tests run against both backends** via testcontainers.
 - **Idempotency** is a first-class concern on writes (payment create, refund, worker settle-* methods).
-- **Money math** in Go (`decimal.Decimal`), stored as `Decimal128` (Mongo) or `numeric(19,4)` (PG).
+- **Money math** as `int64` minor units end-to-end in Go, stored as `int64` (Mongo) / `BIGINT` (PG). Never float; fees round half-even (`internal/domain/money.go`).
 - **Currency-scoped balances** — `merchant_balances(merchant_id, currency)`; no FX.
 - **Auth is skipped** — actor identity in `X-Actor-Role` + `X-Actor-Id` headers.
 

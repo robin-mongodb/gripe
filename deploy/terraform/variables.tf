@@ -80,3 +80,15 @@ variable "app_env" {
   sensitive   = true
   description = "Extra env vars written into /opt/gripe/.env on the EC2. Put MONGO_URI here (Atlas is external — user-owned)."
 }
+
+variable "enable_loadgen" {
+  type        = bool
+  default     = false
+  description = "Spin up the k6 load-generator EC2 (perf phase only). Costs ~nothing when false."
+}
+
+variable "loadgen_instance_type" {
+  type        = string
+  default     = "t3.medium"
+  description = "Load-gen size. t3.medium keeps k6 from being the bottleneck at a few hundred r/s."
+}

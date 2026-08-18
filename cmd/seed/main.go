@@ -11,11 +11,9 @@ import (
 	"os"
 	"time"
 
+	"github.com/robin-mongodb/gripe/internal/bootstrap"
 	"github.com/robin-mongodb/gripe/internal/config"
 	"github.com/robin-mongodb/gripe/internal/seed"
-	"github.com/robin-mongodb/gripe/internal/store"
-	mongostore "github.com/robin-mongodb/gripe/store/mongo"
-	pgstore "github.com/robin-mongodb/gripe/store/postgres"
 )
 
 func main() {
@@ -36,25 +34,12 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	var s store.Store
-	switch cfg.Backend {
-	case config.BackendMongo:
-		ms, err := mongostore.New(ctx, cfg.MongoURI, cfg.MongoDB)
-		if err != nil {
-			log.Error("mongo", "err", err)
-			os.Exit(1)
-		}
-		defer ms.Close(context.Background())
-		s = ms
-	case config.BackendPostgres:
-		ps, err := pgstore.New(ctx, cfg.PGWriterDSN)
-		if err != nil {
-			log.Error("postgres", "err", err)
-			os.Exit(1)
-		}
-		defer ps.Close(context.Background())
-		s = ps
+	s, err := bootstrap.OpenStore(ctx, cfg)
+	if err != nil {
+		log.Error("store", "err", err, "backend", cfg.Backend)
+		os.Exit(1)
 	}
+	defer s.Close(context.Background())
 
 	rep, err := seed.Run(ctx, s, opt)
 	if err != nil {

@@ -11,10 +11,9 @@ import (
 	"time"
 
 	"github.com/robin-mongodb/gripe/internal/api"
+	"github.com/robin-mongodb/gripe/internal/bootstrap"
 	"github.com/robin-mongodb/gripe/internal/config"
-	"github.com/robin-mongodb/gripe/internal/store"
-	mongostore "github.com/robin-mongodb/gripe/store/mongo"
-	pgstore "github.com/robin-mongodb/gripe/store/postgres"
+	"github.com/robin-mongodb/gripe/internal/events"
 )
 
 func main() {
@@ -27,34 +26,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Backend selection.
-	var s store.Store
-	switch cfg.Backend {
-	case config.BackendMongo:
-		bctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		ms, err := mongostore.New(bctx, cfg.MongoURI, cfg.MongoDB)
-		cancel()
-		if err != nil {
-			log.Error("mongo store", "err", err)
-			os.Exit(1)
-		}
-		s = ms
-		log.Info("selected backend", "backend", "mongo", "db", cfg.MongoDB)
-	case config.BackendPostgres:
-		bctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		ps, err := pgstore.New(bctx, cfg.PGWriterDSN)
-		cancel()
-		if err != nil {
-			log.Error("postgres store", "err", err)
-			os.Exit(1)
-		}
-		s = ps
-		log.Info("selected backend", "backend", "postgres")
+	s, err := bootstrap.OpenStore(context.Background(), cfg)
+	if err != nil {
+		log.Error("store", "err", err, "backend", cfg.Backend)
+		os.Exit(1)
+	}
+	log.Info("selected backend", "backend", cfg.Backend)
+
+	// payment.created publisher; nil (no-op) when SQS isn't configured.
+	pub, err := events.NewSQS(context.Background(), cfg.SQSPaymentCreatedURL)
+	if err != nil {
+		log.Error("sqs publisher", "err", err)
+		os.Exit(1)
 	}
 
 	srv := &http.Server{
 		Addr:              cfg.APIAddr,
-		Handler:           api.New(cfg, s).Handler(),
+		Handler:           api.New(cfg, s, pub).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

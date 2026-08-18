@@ -67,12 +67,12 @@
   <!-- workers -->
   <rect x="200" y="270" width="160" height="80" class="box" fill="color-mix(in oklab, canvas 88%, transparent)"/>
   <text x="280" y="298" text-anchor="middle" class="title">fraud-worker</text>
-  <text x="280" y="315" text-anchor="middle" class="small">reads payment, mocks</text>
-  <text x="280" y="330" text-anchor="middle" class="small">check → SettleFraudScore</text>
+  <text x="280" y="315" text-anchor="middle" class="small">idle stub — parked</text>
+  <text x="280" y="330" text-anchor="middle" class="small">(SettleFraudScore later)</text>
 
   <rect x="580" y="270" width="170" height="80" class="box" fill="color-mix(in oklab, canvas 88%, transparent)"/>
   <text x="665" y="298" text-anchor="middle" class="title">fee-worker</text>
-  <text x="665" y="315" text-anchor="middle" class="small">reads payment, picks</text>
+  <text x="665" y="315" text-anchor="middle" class="small">consumes payment.created</text>
   <text x="665" y="330" text-anchor="middle" class="small">mock fee → SettleNetworkFee</text>
 
   <!-- SQS -->
@@ -144,7 +144,7 @@
     <text x="0" y="42">② nginx routes to web (page) or api (JSON)</text>
     <text x="0" y="62">③ api writes to the chosen backend (RDS PG <em>or</em> Atlas, one at a time via config flag)</text>
     <text x="0" y="82">④ api publishes {payment_id, ...} to SQS</text>
-    <text x="0" y="102">⑤ fraud-worker + fee-worker consume the same message; each reads the payment and does one conditional update</text>
+    <text x="0" y="102">⑤ fee-worker consumes payment.created and does one set-once conditional update (fraud-worker is an idle stub — parked)</text>
     <text x="0" y="122">⑥ workers hit whichever DB is configured — dashed lines show both options; only one is live at once</text>
   </g>
 </svg>

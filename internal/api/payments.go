@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -70,6 +71,13 @@ func (s *Server) createPayment(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeStoreError(w, err)
 		return
+	}
+	// Fan out payment.created (fee-worker consumes). Best-effort by design:
+	// a publish failure is logged, never surfaced — the payment is already durable.
+	if p.Status != domain.StatusDeclined {
+		if err := s.events.PublishPaymentCreated(r.Context(), p); err != nil {
+			slog.Error("publish payment.created", "payment_id", p.ID, "err", err)
+		}
 	}
 	writeJSON(w, http.StatusCreated, p)
 }

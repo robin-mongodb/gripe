@@ -54,8 +54,11 @@ type Payment struct {
 	Method        PaymentMethod `json:"method"`
 	Status        PaymentStatus `json:"status"`
 	RefundedMinor int64         `json:"refunded_minor"`
-	CreatedAt     time.Time     `json:"created_at"`
-	UpdatedAt     time.Time     `json:"updated_at"`
+	// NetworkFeeMinor is the mock card-network fee set once by the fee-worker.
+	// Bookkeeping only — it never moves merchant balances. 0 = not yet set.
+	NetworkFeeMinor int64     `json:"network_fee_minor,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 type CreatePaymentInput struct {

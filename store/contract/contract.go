@@ -828,6 +828,33 @@ func RunStoreContract(t *testing.T, s store.Store) {
 		}
 	})
 
+	t.Run("SettleNetworkFee_sets_once_and_redelivery_is_noop", func(t *testing.T) {
+		p := pay(t, "mer_netfee", 10_000, domain.GBP, "idem-nf-1")
+		got, err := s.SettleNetworkFee(ctx, p.ID, 45)
+		if err != nil {
+			t.Fatalf("settle network fee: %v", err)
+		}
+		if got.NetworkFeeMinor != 45 {
+			t.Fatalf("network_fee = %d, want 45", got.NetworkFeeMinor)
+		}
+		// SQS is at-least-once: a redelivered message with a different mock fee
+		// must not overwrite the first write.
+		again, err := s.SettleNetworkFee(ctx, p.ID, 99)
+		if err != nil {
+			t.Fatalf("redelivery: %v", err)
+		}
+		if again.NetworkFeeMinor != 45 {
+			t.Fatalf("redelivery overwrote fee: %d", again.NetworkFeeMinor)
+		}
+		if _, err := s.SettleNetworkFee(ctx, "pay_missing", 45); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("missing: want ErrNotFound, got %v", err)
+		}
+		// Balances untouched — network fee is bookkeeping, not a merchant debit.
+		if b := balance(t, "mer_netfee", domain.GBP); b.BalanceMinor != 0 || b.FeesMinor != 0 {
+			t.Fatalf("network fee moved a balance: %+v", b)
+		}
+	})
+
 	t.Run("AdminRevenueReport_sums_fees_per_currency", func(t *testing.T) {
 		before, err := s.AdminRevenueReport(ctx)
 		if err != nil {

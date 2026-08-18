@@ -179,9 +179,9 @@ func (s *Store) selectPaymentByID(ctx context.Context, id string) (domain.Paymen
 	var p domain.Payment
 	var cur, meth, stat string
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, merchant_id, customer_id, amount_minor, currency, method, status, refunded_minor, created_at, updated_at
+		SELECT id, merchant_id, customer_id, amount_minor, currency, method, status, refunded_minor, COALESCE(network_fee_minor, 0), created_at, updated_at
 		FROM payments WHERE id = $1`, id,
-	).Scan(&p.ID, &p.MerchantID, &p.CustomerID, &p.AmountMinor, &cur, &meth, &stat, &p.RefundedMinor, &p.CreatedAt, &p.UpdatedAt)
+	).Scan(&p.ID, &p.MerchantID, &p.CustomerID, &p.AmountMinor, &cur, &meth, &stat, &p.RefundedMinor, &p.NetworkFeeMinor, &p.CreatedAt, &p.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Payment{}, store.ErrNotFound
 	}
@@ -352,7 +352,7 @@ func (s *Store) listPayments(ctx context.Context, merchantScope string, f domain
 			arg(c.CreatedAt), arg(c.CreatedAt), arg(c.ID)))
 	}
 
-	sqlText := `SELECT id, merchant_id, customer_id, amount_minor, currency, method, status, refunded_minor, created_at, updated_at FROM payments`
+	sqlText := `SELECT id, merchant_id, customer_id, amount_minor, currency, method, status, refunded_minor, COALESCE(network_fee_minor, 0), created_at, updated_at FROM payments`
 	if len(where) > 0 {
 		sqlText += " WHERE " + strings.Join(where, " AND ")
 	}
@@ -368,7 +368,7 @@ func (s *Store) listPayments(ctx context.Context, merchantScope string, f domain
 	for rows.Next() {
 		var p domain.Payment
 		var cur, meth, stat string
-		if err := rows.Scan(&p.ID, &p.MerchantID, &p.CustomerID, &p.AmountMinor, &cur, &meth, &stat, &p.RefundedMinor, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.MerchantID, &p.CustomerID, &p.AmountMinor, &cur, &meth, &stat, &p.RefundedMinor, &p.NetworkFeeMinor, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			return domain.Page{}, err
 		}
 		p.Currency = domain.Currency(cur)
@@ -582,9 +582,9 @@ func (s *Store) SettlePayment(ctx context.Context, paymentID string) (domain.Pay
 	err = tx.QueryRow(ctx, `
 		UPDATE payments SET status = 'settled', updated_at = $1
 		 WHERE id = $2 AND status IN ('captured','pending')
-		RETURNING id, merchant_id, customer_id, amount_minor, currency, method, refunded_minor, created_at, updated_at`,
+		RETURNING id, merchant_id, customer_id, amount_minor, currency, method, refunded_minor, COALESCE(network_fee_minor, 0), created_at, updated_at`,
 		now, paymentID,
-	).Scan(&p.ID, &p.MerchantID, &p.CustomerID, &p.AmountMinor, &cur, &meth, &p.RefundedMinor, &p.CreatedAt, &p.UpdatedAt)
+	).Scan(&p.ID, &p.MerchantID, &p.CustomerID, &p.AmountMinor, &cur, &meth, &p.RefundedMinor, &p.NetworkFeeMinor, &p.CreatedAt, &p.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		existing, findErr := s.selectPaymentByID(ctx, paymentID)
 		if findErr != nil {
@@ -653,6 +653,22 @@ func (s *Store) SettleRefund(ctx context.Context, refundID string) (domain.Refun
 		return domain.Refund{}, err
 	}
 	return r, nil
+}
+
+// SettleNetworkFee — fee-worker. Records the mock network fee exactly once:
+// only fills a NULL column, so at-least-once SQS redelivery is a harmless no-op
+// (the stored payment is returned as-is, no error). Never touches status or balances.
+func (s *Store) SettleNetworkFee(ctx context.Context, paymentID string, feeMinor int64) (domain.Payment, error) {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE payments SET network_fee_minor = $2, updated_at = $3
+		 WHERE id = $1 AND network_fee_minor IS NULL`,
+		paymentID, feeMinor, time.Now().UTC(),
+	)
+	if err != nil {
+		return domain.Payment{}, err
+	}
+	// Read back either way: missing -> ErrNotFound; already-set -> stored row as-is.
+	return s.selectPaymentByID(ctx, paymentID)
 }
 
 func (s *Store) GetMerchantBalances(ctx context.Context, merchantID string) ([]domain.Balance, error) {

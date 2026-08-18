@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/robin-mongodb/gripe/internal/config"
+	"github.com/robin-mongodb/gripe/internal/events"
 	"github.com/robin-mongodb/gripe/internal/store"
 )
 
@@ -17,15 +18,16 @@ const idempotencyTTL = 24 * time.Hour
 
 // Server holds handler dependencies. Store may be nil pre-boot (see cmd/api/main.go).
 type Server struct {
-	cfg   config.Config
-	store store.Store
-	mux   *http.ServeMux
+	cfg    config.Config
+	store  store.Store
+	events *events.SQSPublisher // nil = no-op (SQS not configured)
+	mux    *http.ServeMux
 }
 
 // New builds the HTTP surface. The idempotency middleware needs an IdempotencyStore;
-// impls (store/mongo.Store) satisfy it via type assertion.
-func New(cfg config.Config, s store.Store) *Server {
-	srv := &Server{cfg: cfg, store: s, mux: http.NewServeMux()}
+// impls (store/mongo.Store) satisfy it via type assertion. pub may be nil.
+func New(cfg config.Config, s store.Store, pub *events.SQSPublisher) *Server {
+	srv := &Server{cfg: cfg, store: s, events: pub, mux: http.NewServeMux()}
 	srv.routes()
 	return srv
 }

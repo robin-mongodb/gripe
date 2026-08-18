@@ -37,6 +37,10 @@ type Store interface {
 	// balance by (amount - GripeFee(amount)) and subtracts the fee from fees paid —
 	// Gripe returns its cut on refunds. Double-settle is ErrInvalidState.
 	SettleRefund(ctx context.Context, refundID string) (domain.Refund, error)
+	// SettleNetworkFee records the fee-worker's mock network fee, exactly once:
+	// a second call is a no-op returning the payment unchanged (SQS redeliveries
+	// must be harmless). Missing payment is ErrNotFound. Never touches balances.
+	SettleNetworkFee(ctx context.Context, paymentID string, feeMinor int64) (domain.Payment, error)
 
 	// Reads — actor-scoped. Admin sees everything, merchant sees own, customer sees own.
 	GetPayment(ctx context.Context, id string, actor domain.Actor) (domain.Payment, error)

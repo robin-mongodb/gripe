@@ -111,30 +111,32 @@ func (s *Store) ensureIndexes(ctx context.Context) error {
 // ---------- Payment doc + mapping ----------
 
 type paymentDoc struct {
-	ID            string    `bson:"_id"`
-	MerchantID    string    `bson:"merchant_id"`
-	CustomerID    string    `bson:"customer_id"`
-	AmountMinor   int64     `bson:"amount_minor"`
-	Currency      string    `bson:"currency"`
-	Method        string    `bson:"method"`
-	Status        string    `bson:"status"`
-	RefundedMinor int64     `bson:"refunded_minor"`
-	CreatedAt     time.Time `bson:"created_at"`
-	UpdatedAt     time.Time `bson:"updated_at"`
+	ID              string    `bson:"_id"`
+	MerchantID      string    `bson:"merchant_id"`
+	CustomerID      string    `bson:"customer_id"`
+	AmountMinor     int64     `bson:"amount_minor"`
+	Currency        string    `bson:"currency"`
+	Method          string    `bson:"method"`
+	Status          string    `bson:"status"`
+	RefundedMinor   int64     `bson:"refunded_minor"`
+	NetworkFeeMinor int64     `bson:"network_fee_minor,omitempty"` // set-once by SettleNetworkFee; absent == 0
+	CreatedAt       time.Time `bson:"created_at"`
+	UpdatedAt       time.Time `bson:"updated_at"`
 }
 
 func (p paymentDoc) toDomain() domain.Payment {
 	return domain.Payment{
-		ID:            p.ID,
-		MerchantID:    p.MerchantID,
-		CustomerID:    p.CustomerID,
-		AmountMinor:   p.AmountMinor,
-		Currency:      domain.Currency(p.Currency),
-		Method:        domain.PaymentMethod(p.Method),
-		Status:        domain.PaymentStatus(p.Status),
-		RefundedMinor: p.RefundedMinor,
-		CreatedAt:     p.CreatedAt,
-		UpdatedAt:     p.UpdatedAt,
+		ID:              p.ID,
+		MerchantID:      p.MerchantID,
+		CustomerID:      p.CustomerID,
+		AmountMinor:     p.AmountMinor,
+		Currency:        domain.Currency(p.Currency),
+		Method:          domain.PaymentMethod(p.Method),
+		Status:          domain.PaymentStatus(p.Status),
+		RefundedMinor:   p.RefundedMinor,
+		NetworkFeeMinor: p.NetworkFeeMinor,
+		CreatedAt:       p.CreatedAt,
+		UpdatedAt:       p.UpdatedAt,
 	}
 }
 
@@ -406,6 +408,7 @@ func (s *Store) CapturePayment(ctx context.Context, paymentID string) (domain.Pa
 	}
 	return updated.toDomain(), nil
 }
+
 // ---------- Settlement + balances (tasks 51/52/53) ----------
 
 // balanceDoc is one (merchant, currency) ledger row. Money stays int64 minor units
@@ -510,6 +513,50 @@ func (s *Store) SettleRefund(ctx context.Context, refundID string) (domain.Refun
 	}
 	return updated.toDomain(), nil
 }
+
+// SettleNetworkFee — fee-worker's mock network fee, set exactly once. SQS is
+// at-least-once, so redeliveries (possibly with a different mock fee) must be
+// harmless: the filter only matches while network_fee_minor is unset/0, making
+// the $set idempotent by construction — no read-then-write race.
+// Never touches merchant_balances or payment status.
+func (s *Store) SettleNetworkFee(ctx context.Context, paymentID string, feeMinor int64) (domain.Payment, error) {
+	if feeMinor <= 0 {
+		return domain.Payment{}, fmt.Errorf("%w: network fee must be > 0", store.ErrInvalidState)
+	}
+
+	// nil matches a missing field; 0 covers docs written with an explicit zero.
+	filter := bson.M{
+		"_id":               paymentID,
+		"network_fee_minor": bson.M{"$in": bson.A{nil, int64(0)}},
+	}
+	update := bson.M{"$set": bson.M{
+		"network_fee_minor": feeMinor,
+		"updated_at":        time.Now().UTC(),
+	}}
+
+	res := s.db.Collection(colPayments).FindOneAndUpdate(ctx, filter, update,
+		options.FindOneAndUpdate().SetReturnDocument(options.After))
+	var updated paymentDoc
+	err := res.Decode(&updated)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		// Missing payment, or fee already set — probe to tell which.
+		var current paymentDoc
+		findErr := s.db.Collection(colPayments).FindOne(ctx, bson.M{"_id": paymentID}).Decode(&current)
+		if errors.Is(findErr, mongo.ErrNoDocuments) {
+			return domain.Payment{}, store.ErrNotFound
+		}
+		if findErr != nil {
+			return domain.Payment{}, findErr
+		}
+		// Redelivery: fee already recorded — no-op, return the payment as-is.
+		return current.toDomain(), nil
+	}
+	if err != nil {
+		return domain.Payment{}, err
+	}
+	return updated.toDomain(), nil
+}
+
 // ListMerchantPayments — task 22 (UC-5). Merchant sees own payments, newest first.
 // Cursor is base64-of-{created_at,id}; opaque to callers. Page size is capped at listPageMax.
 //
@@ -632,6 +679,7 @@ func decodeCursor(c domain.Cursor) (paymentCursor, error) {
 	}
 	return out, nil
 }
+
 // GetMerchantBalances — task 53. One row per currency the merchant has ever settled in.
 // Served by the prefix of the unique (merchant_id, currency) index — covered lookup + sort.
 func (s *Store) GetMerchantBalances(ctx context.Context, merchantID string) ([]domain.Balance, error) {
@@ -779,6 +827,7 @@ func (s *Store) AdminVolumeReport(ctx context.Context, from, to time.Time) ([]do
 	}
 	return out, nil
 }
+
 // ---------- Subscriptions ----------
 
 type subscriptionDoc struct {

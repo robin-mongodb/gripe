@@ -46,6 +46,12 @@ resource "aws_instance" "loadgen" {
   subnet_id              = data.aws_subnets.default.ids[0]
   key_name               = aws_key_pair.this.key_name
   vpc_security_group_ids = [aws_security_group.loadgen[0].id]
+  # ponytail: reuses the app box's role (already an Atlas IAM database user) so
+  # perf/run-perf.sh can push results to Atlas via MONGODB-AWS. Grants SQS too,
+  # which loadgen doesn't need — split the role if this ever leaves demo-land.
+  iam_instance_profile = aws_iam_instance_profile.ec2.name
+
+  user_data_replace_on_change = true # user-data only runs on first boot
 
   user_data = <<-EOF
     #!/bin/bash
@@ -53,8 +59,20 @@ resource "aws_instance" "loadgen" {
     dnf install -y git
     curl -sL https://github.com/grafana/k6/releases/download/v0.54.0/k6-v0.54.0-linux-amd64.tar.gz \
       | tar xz --strip-components=1 -C /usr/local/bin k6-v0.54.0-linux-amd64/k6
+    # mongosh: pushes k6 results to Atlas after each run (perf/run-perf.sh)
+    cat > /etc/yum.repos.d/mongodb-mongosh.repo <<'REPO'
+    [mongodb-org-8.0]
+    name=MongoDB Repository
+    baseurl=https://repo.mongodb.org/yum/amazon/2023/mongodb-org/8.0/x86_64/
+    gpgcheck=1
+    enabled=1
+    gpgkey=https://pgp.mongodb.com/server-8.0.asc
+    REPO
+    dnf install -y mongodb-mongosh
     sudo -u ec2-user git clone "${var.repo_url}" /home/ec2-user/gripe
-    echo "loadgen ready: cd gripe/perf && k6 run -e BASE=http://${aws_instance.app.private_ip}:8080/v1 scenarios.js" \
+    echo "MONGO_URI=${lookup(var.app_env, "MONGO_URI", "")}" > /home/ec2-user/gripe/perf/.env
+    chown ec2-user:ec2-user /home/ec2-user/gripe/perf/.env
+    echo "loadgen ready: cd gripe/perf && ./run-perf.sh <postgres|mongo> [RATE] [DURATION] (BASE=http://${aws_instance.app.private_ip}:8080/v1)" \
       > /etc/motd
   EOF
 

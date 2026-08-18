@@ -34,3 +34,11 @@ On the loadgen box (`terraform output loadgen_public_ip`; app box private IP fro
     k6 run -e BASE=http://<app-private-ip>:8080/v1 -e MERCHANTS=50 -e LABEL=postgres scenarios.js
 
 Each run writes `results-<label>.json` for the comparison report (task 43).
+
+Prefer `./run-perf.sh <postgres|mongo> [RATE] [DURATION]` over raw `k6 run` — it runs the
+same scenarios, then immediately persists the full summary (plus label/rate/duration/git
+sha/timestamp) to Atlas `gripe_perf.results` via mongosh + MONGODB-AWS, so results survive
+the EC2 cleanup reaper. Separate database from the benchmarked `gripe`; insert happens
+after the run ends so it can't skew latencies. Query back with:
+
+    mongosh "$MONGO_URI" --eval 'db.getSiblingDB("gripe_perf").results.find({}, {label:1, rate:1, run_at:1}).sort({run_at:-1})'

@@ -28,4 +28,11 @@ resource "aws_rds_cluster" "pg" {
   deletion_protection     = false
   backup_retention_period = 1 # ponytail: 1 day is enough for the demo.
   apply_immediately       = true
+
+  # Provider bug (hashicorp/terraform-provider-aws#41203): iops must be omitted
+  # at create (<400 GiB gp3), but AWS reports the implicit 3000 back into state,
+  # so terraform then tries to "unset" it and ModifyDBCluster fails. Ignore it.
+  lifecycle {
+    ignore_changes = [iops]
+  }
 }

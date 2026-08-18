@@ -24,6 +24,10 @@ services:
     env_file: .env
     environment:
       API_ADDR: ":8080"
+    # Published for the k6 loadgen box — nginx rate-limits /v1/ to 100 r/s, so
+    # perf runs must bypass it (perf/README.md). SG restricts who can reach it.
+    ports:
+      - "8080:8080"
     restart: unless-stopped
 
   fraud-worker:

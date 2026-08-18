@@ -4,6 +4,7 @@ package seed
 
 import (
 	"context"
+	"log/slog"
 	"fmt"
 	"math/rand/v2"
 	"time"
@@ -65,6 +66,11 @@ func Run(ctx context.Context, s store.Store, opt Options) (Report, error) {
 				return rep, fmt.Errorf("seed payment m=%d i=%d: %w", m, i, err)
 			}
 			rep.Payments++
+			// Progress heartbeat — full perf seeds run ~10 min with no output otherwise.
+			if total := opt.Merchants * opt.PaymentsPer; rep.Payments%1000 == 0 {
+				slog.Info("seed progress", "payments", rep.Payments, "of", total,
+					"elapsed", time.Since(start).Round(time.Second))
+			}
 
 			// Settle ~60% of settleable payments so balances + fee revenue show up
 			// in the demo (captured or pending are the settleable states).

@@ -31,7 +31,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	// ponytail: 2h ceiling — the perf-volume seed (50m × 2000p) runs 10-15 min;
+	// this is a hang guard, not a pace expectation.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 	defer cancel()
 
 	s, err := bootstrap.OpenStore(ctx, cfg)

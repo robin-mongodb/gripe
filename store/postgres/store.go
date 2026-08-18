@@ -117,6 +117,9 @@ func (s *Store) CreatePayment(ctx context.Context, in domain.CreatePaymentInput,
 	if strings.TrimSpace(in.MerchantID) == "" {
 		return domain.Payment{}, fmt.Errorf("%w: merchant_id required", store.ErrInvalidState)
 	}
+	if strings.TrimSpace(in.CustomerID) == "" {
+		return domain.Payment{}, fmt.Errorf("%w: customer_id required", store.ErrInvalidState)
+	}
 
 	now := time.Now().UTC()
 	status := domain.StatusCaptured
@@ -142,7 +145,17 @@ func (s *Store) CreatePayment(ctx context.Context, in domain.CreatePaymentInput,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
-	_, err := s.pool.Exec(ctx, `
+	// One tx: implicit onboarding (upsert merchant + customer parents) then the
+	// payment insert, so the FKs always have rows to point at.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return domain.Payment{}, err
+	}
+	defer tx.Rollback(ctx)
+	if err := upsertParties(ctx, tx, p.MerchantID, p.CustomerID); err != nil {
+		return domain.Payment{}, err
+	}
+	_, err = tx.Exec(ctx, `
 		INSERT INTO payments (id, merchant_id, customer_id, amount_minor, currency, method, status, refunded_minor, created_at, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,0,$8,$9)`,
 		p.ID, p.MerchantID, p.CustomerID, p.AmountMinor, string(p.Currency), string(p.Method), string(p.Status), p.CreatedAt, p.UpdatedAt,
@@ -150,7 +163,26 @@ func (s *Store) CreatePayment(ctx context.Context, in domain.CreatePaymentInput,
 	if err != nil {
 		return domain.Payment{}, fmt.Errorf("insert payment: %w", err)
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return domain.Payment{}, err
+	}
 	return p, nil
+}
+
+// upsertParties implicitly onboards the merchant and customer rows a payment or
+// subscription references. ON CONFLICT DO NOTHING makes repeats a no-op.
+func upsertParties(ctx context.Context, tx pgx.Tx, merchantID, customerID string) error {
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO merchants (id, created_at) VALUES ($1, now())
+		ON CONFLICT (id) DO NOTHING`, merchantID); err != nil {
+		return fmt.Errorf("upsert merchant: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO customers (id, created_at) VALUES ($1, now())
+		ON CONFLICT (id) DO NOTHING`, customerID); err != nil {
+		return fmt.Errorf("upsert customer: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) GetPayment(ctx context.Context, id string, actor domain.Actor) (domain.Payment, error) {
@@ -271,6 +303,8 @@ func (s *Store) RefundPayment(ctx context.Context, paymentID string, amountMinor
 		}
 	}
 
+	// Refund rows are normalized: merchant/currency live on the payment. The
+	// returned domain.Refund still carries them, filled from the RETURNING above.
 	r := domain.Refund{
 		ID:          newID("re"),
 		PaymentID:   paymentID,
@@ -281,9 +315,9 @@ func (s *Store) RefundPayment(ctx context.Context, paymentID string, amountMinor
 		CreatedAt:   now,
 	}
 	_, err = tx.Exec(ctx, `
-		INSERT INTO refunds (id, payment_id, merchant_id, amount_minor, currency, status, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-		r.ID, r.PaymentID, r.MerchantID, r.AmountMinor, string(r.Currency), string(r.Status), r.CreatedAt,
+		INSERT INTO refunds (id, payment_id, amount_minor, status, created_at)
+		VALUES ($1,$2,$3,$4,$5)`,
+		r.ID, r.PaymentID, r.AmountMinor, string(r.Status), r.CreatedAt,
 	)
 	if err != nil {
 		return domain.Refund{}, err
@@ -428,13 +462,25 @@ func (s *Store) CreateSubscription(ctx context.Context, in domain.CreateSubscrip
 		NextCycleIdx: 0,
 		CreatedAt:    now,
 	}
-	_, err := s.pool.Exec(ctx, `
+	// Same implicit onboarding as CreatePayment: parents first, then the child row.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	defer tx.Rollback(ctx)
+	if err := upsertParties(ctx, tx, sub.MerchantID, sub.CustomerID); err != nil {
+		return domain.Subscription{}, err
+	}
+	_, err = tx.Exec(ctx, `
 		INSERT INTO subscriptions (id, merchant_id, customer_id, amount_minor, currency, method, cadence, status, next_charge_at, next_cycle_index, created_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,0,$10)`,
 		sub.ID, sub.MerchantID, sub.CustomerID, sub.AmountMinor, string(sub.Currency), string(sub.Method),
 		string(sub.Cadence), string(sub.Status), sub.NextChargeAt, sub.CreatedAt,
 	)
 	if err != nil {
+		return domain.Subscription{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return domain.Subscription{}, err
 	}
 	return sub, nil
@@ -620,10 +666,13 @@ func (s *Store) SettleRefund(ctx context.Context, refundID string) (domain.Refun
 
 	var r domain.Refund
 	var cur string
+	// Refunds are normalized; join the parent payment to recover merchant/currency
+	// for the balance debit and the returned DTO.
 	err = tx.QueryRow(ctx, `
-		UPDATE refunds SET status = 'settled'
-		 WHERE id = $1 AND status = 'created'
-		RETURNING id, payment_id, merchant_id, amount_minor, currency, created_at`,
+		UPDATE refunds r SET status = 'settled'
+		  FROM payments p
+		 WHERE r.id = $1 AND r.status = 'created' AND p.id = r.payment_id
+		RETURNING r.id, r.payment_id, p.merchant_id, r.amount_minor, p.currency, r.created_at`,
 		refundID,
 	).Scan(&r.ID, &r.PaymentID, &r.MerchantID, &r.AmountMinor, &cur, &r.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {

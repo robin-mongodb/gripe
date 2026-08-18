@@ -893,4 +893,109 @@ func RunStoreContract(t *testing.T, s store.Store) {
 			}
 		}
 	})
+
+	// --- Idiomatic remodel pins (tasks 73-75) ---
+	// Merchants/customers are first-class on both backends (PG: FK tables,
+	// Mongo: documents) but onboarding is implicit inside CreatePayment /
+	// CreateSubscription — these pins keep both impls honest about that.
+
+	t.Run("CreatePayment_rejects_empty_customer", func(t *testing.T) {
+		_, err := s.CreatePayment(ctx, domain.CreatePaymentInput{
+			MerchantID: "mer_nocust", AmountMinor: 1_000, Currency: domain.GBP, Method: domain.MethodCard,
+		}, "idem-nocust-1")
+		if !errors.Is(err, store.ErrInvalidState) {
+			t.Fatalf("empty customer: want ErrInvalidState, got %v", err)
+		}
+	})
+
+	t.Run("CreatePayment_repeat_merchant_and_customer_is_fine", func(t *testing.T) {
+		// Implicit onboarding must be idempotent: the second payment for the same
+		// brand-new merchant/customer pair must not trip a duplicate-key error.
+		for i, key := range []string{"idem-onboard-1", "idem-onboard-2"} {
+			if _, err := s.CreatePayment(ctx, domain.CreatePaymentInput{
+				MerchantID: "mer_onboard_once", CustomerID: "cus_onboard_once",
+				AmountMinor: 2_000, Currency: domain.EUR, Method: domain.MethodCard,
+			}, key); err != nil {
+				t.Fatalf("payment %d: %v", i, err)
+			}
+		}
+	})
+
+	t.Run("SettleRefund_addressable_across_payments", func(t *testing.T) {
+		// Refunds must be addressable by refund ID alone regardless of storage
+		// shape (Mongo embeds them in the payment doc). Settle in reverse order.
+		p1 := pay(t, "mer_xref", 10_000, domain.GBP, "idem-xref-1")
+		p2 := pay(t, "mer_xref", 20_000, domain.GBP, "idem-xref-2")
+		for _, p := range []domain.Payment{p1, p2} {
+			if _, err := s.SettlePayment(ctx, p.ID); err != nil {
+				t.Fatalf("settle %s: %v", p.ID, err)
+			}
+		}
+		r1, err := s.RefundPayment(ctx, p1.ID, 1_000, "idem-xref-r1")
+		if err != nil {
+			t.Fatalf("refund p1: %v", err)
+		}
+		r2, err := s.RefundPayment(ctx, p2.ID, 2_000, "idem-xref-r2")
+		if err != nil {
+			t.Fatalf("refund p2: %v", err)
+		}
+		for _, r := range []domain.Refund{r2, r1} { // reverse creation order
+			got, err := s.SettleRefund(ctx, r.ID)
+			if err != nil {
+				t.Fatalf("settle refund %s: %v", r.ID, err)
+			}
+			if got.Status != domain.RefundSettled {
+				t.Fatalf("refund %s status = %s, want settled", r.ID, got.Status)
+			}
+			if got.PaymentID == "" || got.MerchantID != "mer_xref" || got.Currency != domain.GBP {
+				t.Fatalf("refund %s lost parent context: %+v", r.ID, got)
+			}
+		}
+		// Net: credits (30k - fees) minus refund debits (3k - refund fees).
+		want := (10_000 - domain.GripeFee(10_000)) + (20_000 - domain.GripeFee(20_000)) -
+			(1_000 - domain.GripeFee(1_000)) - (2_000 - domain.GripeFee(2_000))
+		if b := balance(t, "mer_xref", domain.GBP); b.BalanceMinor != want {
+			t.Fatalf("balance = %d, want %d", b.BalanceMinor, want)
+		}
+	})
+
+	t.Run("GetMerchantBalances_unknown_merchant_empty", func(t *testing.T) {
+		bals, err := s.GetMerchantBalances(ctx, "mer_never_seen_zzz")
+		if err != nil {
+			t.Fatalf("balances: %v", err)
+		}
+		if len(bals) != 0 {
+			t.Fatalf("want empty slice, got %+v", bals)
+		}
+	})
+
+	t.Run("RefundPayment_after_partial_settle_interleave", func(t *testing.T) {
+		p := pay(t, "mer_interleave", 10_000, domain.GBP, "idem-il-1")
+		if _, err := s.SettlePayment(ctx, p.ID); err != nil {
+			t.Fatalf("settle: %v", err)
+		}
+		var refunded int64
+		for i, amt := range []int64{3_000, 4_000} {
+			r, err := s.RefundPayment(ctx, p.ID, amt, fmt.Sprintf("idem-il-r%d", i))
+			if err != nil {
+				t.Fatalf("refund %d: %v", i, err)
+			}
+			if _, err := s.SettleRefund(ctx, r.ID); err != nil {
+				t.Fatalf("settle refund %d: %v", i, err)
+			}
+			refunded += amt
+			got, err := s.GetPayment(ctx, p.ID, domain.Actor{Role: domain.RoleAdmin})
+			if err != nil {
+				t.Fatalf("get: %v", err)
+			}
+			if got.RefundedMinor != refunded {
+				t.Fatalf("refunded_minor = %d, want %d", got.RefundedMinor, refunded)
+			}
+		}
+		want := (10_000 - domain.GripeFee(10_000)) -
+			(3_000 - domain.GripeFee(3_000)) - (4_000 - domain.GripeFee(4_000))
+		if b := balance(t, "mer_interleave", domain.GBP); b.BalanceMinor != want {
+			t.Fatalf("balance = %d, want %d", b.BalanceMinor, want)
+		}
+	})
 }

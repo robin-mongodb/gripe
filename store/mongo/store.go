@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -24,11 +25,11 @@ import (
 )
 
 const (
-	colPayments = "payments"
-	colIdemKeys = "idempotency_keys"
-	colRefunds  = "refunds"
-	colSubs     = "subscriptions"
-	colBalances = "merchant_balances"
+	colPayments  = "payments"
+	colIdemKeys  = "idempotency_keys"
+	colSubs      = "subscriptions"
+	colMerchants = "merchants"
+	colCustomers = "customers"
 
 	// Amounts ending in .13 (minor units mod 100 == 13) are mock-declined.
 	// Only relevant to card / Apple Pay / Google Pay.
@@ -65,15 +66,14 @@ func (s *Store) Ping(ctx context.Context) error  { return s.client.Ping(ctx, nil
 func (s *Store) ensureIndexes(ctx context.Context) error {
 	_, err := s.db.Collection(colPayments).Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "merchant_id", Value: 1}, {Key: "created_at", Value: -1}}},
+		// Multikey index so SettleRefund can address an embedded refund by ID.
+		// Non-unique on purpose: a unique index on an array path indexes null for
+		// docs with an empty/missing array, so the second refund-less payment
+		// would collide. IDs are 96-bit random — uniqueness comes from newID.
+		{Keys: bson.D{{Key: "refunds.id", Value: 1}}},
 	})
 	if err != nil {
 		return fmt.Errorf("payments indexes: %w", err)
-	}
-	_, err = s.db.Collection(colRefunds).Indexes().CreateMany(ctx, []mongo.IndexModel{
-		{Keys: bson.D{{Key: "payment_id", Value: 1}, {Key: "created_at", Value: -1}}},
-	})
-	if err != nil {
-		return fmt.Errorf("refunds indexes: %w", err)
 	}
 	// Subscriptions: the cycler queries {status, next_charge_at <= now}. Compound
 	// (status, next_charge_at) supports the equality-then-range pattern efficiently.
@@ -82,18 +82,6 @@ func (s *Store) ensureIndexes(ctx context.Context) error {
 	})
 	if err != nil {
 		return fmt.Errorf("subscriptions indexes: %w", err)
-	}
-	// One ledger row per (merchant, currency); the unique index makes the $inc-with-upsert
-	// in settle paths race-safe — concurrent first-settles collide here instead of
-	// creating duplicate rows.
-	_, err = s.db.Collection(colBalances).Indexes().CreateMany(ctx, []mongo.IndexModel{
-		{
-			Keys:    bson.D{{Key: "merchant_id", Value: 1}, {Key: "currency", Value: 1}},
-			Options: options.Index().SetUnique(true),
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("merchant_balances indexes: %w", err)
 	}
 	// TTL on expires_at vacuums expired idempotency records automatically.
 	_, err = s.db.Collection(colIdemKeys).Indexes().CreateMany(ctx, []mongo.IndexModel{
@@ -104,6 +92,42 @@ func (s *Store) ensureIndexes(ctx context.Context) error {
 	})
 	if err != nil {
 		return fmt.Errorf("idempotency indexes: %w", err)
+	}
+	return nil
+}
+
+// ---------- Merchants + customers ----------
+
+// currencyBalance is one currency's ledger inside merchants.balances.
+// balances is a currency-keyed subdocument (map, not array) so a settle is a
+// single atomic dotted-path $inc — no array-filter or read-modify-write.
+type currencyBalance struct {
+	BalanceMinor int64 `bson:"balance_minor"`
+	FeesMinor    int64 `bson:"fees_minor"`
+}
+
+type merchantDoc struct {
+	ID       string                     `bson:"_id"`
+	Balances map[string]currencyBalance `bson:"balances"`
+}
+
+// onboardActors implicitly creates the merchant and customer docs on first
+// sight. $setOnInsert-with-upsert is idempotent: repeat pairs are no-ops.
+func (s *Store) onboardActors(ctx context.Context, merchantID, customerID string) error {
+	now := time.Now().UTC()
+	_, err := s.db.Collection(colMerchants).UpdateOne(ctx,
+		bson.M{"_id": merchantID},
+		bson.M{"$setOnInsert": bson.M{"created_at": now, "balances": bson.M{}}},
+		options.UpdateOne().SetUpsert(true))
+	if err != nil {
+		return fmt.Errorf("onboard merchant: %w", err)
+	}
+	_, err = s.db.Collection(colCustomers).UpdateOne(ctx,
+		bson.M{"_id": customerID},
+		bson.M{"$setOnInsert": bson.M{"created_at": now}},
+		options.UpdateOne().SetUpsert(true))
+	if err != nil {
+		return fmt.Errorf("onboard customer: %w", err)
 	}
 	return nil
 }
@@ -122,6 +146,29 @@ type paymentDoc struct {
 	NetworkFeeMinor int64     `bson:"network_fee_minor,omitempty"` // set-once by SettleNetworkFee; absent == 0
 	CreatedAt       time.Time `bson:"created_at"`
 	UpdatedAt       time.Time `bson:"updated_at"`
+	// Refunds are embedded: bounded (sum ≤ amount) and always read with the payment.
+	Refunds []refundElem `bson:"refunds,omitempty"`
+}
+
+// refundElem is an embedded refund. No merchant_id/currency/payment_id — the
+// parent payment doc carries them; toDomain fills them in from the parent.
+type refundElem struct {
+	ID          string    `bson:"id"`
+	AmountMinor int64     `bson:"amount_minor"`
+	Status      string    `bson:"status"`
+	CreatedAt   time.Time `bson:"created_at"`
+}
+
+func (r refundElem) toDomain(parent paymentDoc) domain.Refund {
+	return domain.Refund{
+		ID:          r.ID,
+		PaymentID:   parent.ID,
+		MerchantID:  parent.MerchantID,
+		AmountMinor: r.AmountMinor,
+		Currency:    domain.Currency(parent.Currency),
+		Status:      domain.RefundStatus(r.Status),
+		CreatedAt:   r.CreatedAt,
+	}
 }
 
 func (p paymentDoc) toDomain() domain.Payment {
@@ -210,6 +257,15 @@ func (s *Store) CreatePayment(ctx context.Context, in domain.CreatePaymentInput,
 	if strings.TrimSpace(in.MerchantID) == "" {
 		return domain.Payment{}, fmt.Errorf("%w: merchant_id required", store.ErrInvalidState)
 	}
+	if strings.TrimSpace(in.CustomerID) == "" {
+		return domain.Payment{}, fmt.Errorf("%w: customer_id required", store.ErrInvalidState)
+	}
+
+	// Onboard before the payment insert: a crash in between leaves a harmless
+	// orphan merchant/customer, never a payment pointing at nothing.
+	if err := s.onboardActors(ctx, in.MerchantID, in.CustomerID); err != nil {
+		return domain.Payment{}, err
+	}
 
 	now := time.Now().UTC()
 	status := domain.StatusCaptured
@@ -270,33 +326,14 @@ func (s *Store) GetPayment(ctx context.Context, id string, actor domain.Actor) (
 
 // ---------- Refund ----------
 
-type refundDoc struct {
-	ID          string    `bson:"_id"`
-	PaymentID   string    `bson:"payment_id"`
-	MerchantID  string    `bson:"merchant_id"`
-	AmountMinor int64     `bson:"amount_minor"`
-	Currency    string    `bson:"currency"`
-	Status      string    `bson:"status"`
-	CreatedAt   time.Time `bson:"created_at"`
-}
-
-func (r refundDoc) toDomain() domain.Refund {
-	return domain.Refund{
-		ID:          r.ID,
-		PaymentID:   r.PaymentID,
-		MerchantID:  r.MerchantID,
-		AmountMinor: r.AmountMinor,
-		Currency:    domain.Currency(r.Currency),
-		Status:      domain.RefundStatus(r.Status),
-		CreatedAt:   r.CreatedAt,
-	}
-}
-
 // RefundPayment — task 17. Merchant chooses amount. Constraint: 0 < amount <= (captured - already_refunded).
 //
-// Concurrency-safe: uses a conditional update on `refunded_minor`. The `$expr` in the
-// filter guarantees only one refund can drive refunded_minor past captured_amount.
-// If the update matches zero rows, either the payment doesn't exist, wasn't captured,
+// Concurrency-safe AND atomic: one FindOneAndUpdate with an aggregation-pipeline
+// update bumps refunded_minor, flips status to refunded when fully consumed, and
+// appends the embedded refund element — a single document write, so there is no
+// window where the counter and the refund list disagree. The `$expr` in the filter
+// guarantees only one refund can drive refunded_minor past amount_minor. If the
+// update matches zero rows, either the payment doesn't exist, wasn't captured/settled,
 // or the refund would exceed the remaining amount — we probe to tell which.
 func (s *Store) RefundPayment(ctx context.Context, paymentID string, amountMinor int64, _ string) (domain.Refund, error) {
 	if amountMinor <= 0 {
@@ -317,9 +354,31 @@ func (s *Store) RefundPayment(ctx context.Context, paymentID string, amountMinor
 		},
 	}
 	now := time.Now().UTC()
-	update := bson.M{
-		"$inc": bson.M{"refunded_minor": amountMinor},
-		"$set": bson.M{"updated_at": now},
+	refundID := newID("re")
+	newRefunded := bson.M{"$add": bson.A{"$refunded_minor", amountMinor}}
+	// Pipeline update: $set expressions can reference current field values, which
+	// lets the counter bump, the status flip, and the array append happen in one write.
+	update := mongo.Pipeline{
+		{{Key: "$set", Value: bson.M{
+			"refunded_minor": newRefunded,
+			// Fully refunded -> flip status; otherwise keep whatever it was.
+			"status": bson.M{"$cond": bson.A{
+				bson.M{"$eq": bson.A{newRefunded, "$amount_minor"}},
+				string(domain.StatusRefunded),
+				"$status",
+			}},
+			// $ifNull: older docs may lack the array entirely.
+			"refunds": bson.M{"$concatArrays": bson.A{
+				bson.M{"$ifNull": bson.A{"$refunds", bson.A{}}},
+				bson.A{bson.M{
+					"id":           refundID,
+					"amount_minor": amountMinor,
+					"status":       string(domain.RefundCreated),
+					"created_at":   now,
+				}},
+			}},
+			"updated_at": now,
+		}}},
 	}
 
 	res := s.db.Collection(colPayments).FindOneAndUpdate(ctx, filter, update,
@@ -346,27 +405,14 @@ func (s *Store) RefundPayment(ctx context.Context, paymentID string, amountMinor
 		return domain.Refund{}, err
 	}
 
-	// Optional: if the payment is now fully refunded, flip status. Contract test asserts remaining behaviour;
-	// keep this update conservative — only when refunded_minor == amount_minor.
-	if updated.RefundedMinor == updated.AmountMinor {
-		_, _ = s.db.Collection(colPayments).UpdateOne(ctx,
-			bson.M{"_id": paymentID, "refunded_minor": updated.AmountMinor},
-			bson.M{"$set": bson.M{"status": string(domain.StatusRefunded), "updated_at": now}})
-	}
-
-	r := refundDoc{
-		ID:          newID("re"),
-		PaymentID:   paymentID,
-		MerchantID:  updated.MerchantID,
+	// task 63: refund currency is pinned to the payment's — never caller-supplied.
+	// toDomain(updated) fills PaymentID/MerchantID/Currency from the parent doc.
+	return refundElem{
+		ID:          refundID,
 		AmountMinor: amountMinor,
-		Currency:    updated.Currency, // task 63: refund currency is pinned to the payment's — never caller-supplied
 		Status:      string(domain.RefundCreated),
 		CreatedAt:   now,
-	}
-	if _, err := s.db.Collection(colRefunds).InsertOne(ctx, r); err != nil {
-		return domain.Refund{}, fmt.Errorf("insert refund: %w", err)
-	}
-	return r.toDomain(), nil
+	}.toDomain(updated), nil
 }
 
 // ---------- Not yet implemented ----------
@@ -411,25 +457,22 @@ func (s *Store) CapturePayment(ctx context.Context, paymentID string) (domain.Pa
 
 // ---------- Settlement + balances (tasks 51/52/53) ----------
 
-// balanceDoc is one (merchant, currency) ledger row. Money stays int64 minor units
-// (task 18 decision) — $inc on int64 is atomic and exact, no Decimal128 needed at 2dp.
-type balanceDoc struct {
-	MerchantID   string `bson:"merchant_id"`
-	Currency     string `bson:"currency"`
-	BalanceMinor int64  `bson:"balance_minor"`
-	FeesMinor    int64  `bson:"fees_minor"`
-}
-
-// applyBalanceDelta upserts the (merchant, currency) row and $inc's both counters.
-// The unique index on (merchant_id, currency) turns concurrent upsert races into a
-// retryable duplicate-key error; one retry is enough because the row then exists.
+// applyBalanceDelta $inc's the merchant's per-currency counters via dotted paths
+// into the balances map. Money stays int64 minor units (task 18 decision) — $inc
+// on int64 is atomic and exact. Dotted-path $inc creates missing intermediate
+// subdocs and the upsert covers a missing merchant doc, so there is no first-write
+// race and no dup-key retry needed (the old collection-per-row shape needed one).
 func (s *Store) applyBalanceDelta(ctx context.Context, merchantID, currency string, balanceDelta, feesDelta int64) error {
-	update := bson.M{"$inc": bson.M{"balance_minor": balanceDelta, "fees_minor": feesDelta}}
-	filter := bson.M{"merchant_id": merchantID, "currency": currency}
-	_, err := s.db.Collection(colBalances).UpdateOne(ctx, filter, update, options.UpdateOne().SetUpsert(true))
-	if mongo.IsDuplicateKeyError(err) {
-		_, err = s.db.Collection(colBalances).UpdateOne(ctx, filter, update)
-	}
+	_, err := s.db.Collection(colMerchants).UpdateOne(ctx,
+		bson.M{"_id": merchantID},
+		bson.M{
+			"$inc": bson.M{
+				"balances." + currency + ".balance_minor": balanceDelta,
+				"balances." + currency + ".fees_minor":    feesDelta,
+			},
+			"$set": bson.M{"updated_at": time.Now().UTC()},
+		},
+		options.UpdateOne().SetUpsert(true))
 	return err
 }
 
@@ -485,33 +528,55 @@ func (s *Store) SettlePayment(ctx context.Context, paymentID string) (domain.Pay
 //
 // ponytail: same standalone-Mongo crash window as SettlePayment; same txn upgrade path.
 func (s *Store) SettleRefund(ctx context.Context, refundID string) (domain.Refund, error) {
-	filter := bson.M{"_id": refundID, "status": string(domain.RefundCreated)}
-	update := bson.M{"$set": bson.M{"status": string(domain.RefundSettled)}}
+	now := time.Now().UTC()
+	// $elemMatch pins id AND status to the SAME element; the positional $ then
+	// flips exactly that element. The multikey refunds.id index serves the lookup.
+	filter := bson.M{"refunds": bson.M{"$elemMatch": bson.M{
+		"id":     refundID,
+		"status": string(domain.RefundCreated),
+	}}}
+	update := bson.M{"$set": bson.M{
+		"refunds.$.status": string(domain.RefundSettled),
+		"updated_at":       now,
+	}}
 
-	res := s.db.Collection(colRefunds).FindOneAndUpdate(ctx, filter, update,
+	res := s.db.Collection(colPayments).FindOneAndUpdate(ctx, filter, update,
 		options.FindOneAndUpdate().SetReturnDocument(options.After))
-	var updated refundDoc
+	var updated paymentDoc
 	err := res.Decode(&updated)
 	if errors.Is(err, mongo.ErrNoDocuments) {
-		var current refundDoc
-		findErr := s.db.Collection(colRefunds).FindOne(ctx, bson.M{"_id": refundID}).Decode(&current)
+		// Zero matches: refund missing entirely, or already past `created`.
+		findErr := s.db.Collection(colPayments).FindOne(ctx,
+			bson.M{"refunds.id": refundID}).Err()
 		if errors.Is(findErr, mongo.ErrNoDocuments) {
 			return domain.Refund{}, store.ErrNotFound
 		}
 		if findErr != nil {
 			return domain.Refund{}, findErr
 		}
-		return domain.Refund{}, fmt.Errorf("%w: refund status is %s (only created can settle)", store.ErrInvalidState, current.Status)
+		return domain.Refund{}, fmt.Errorf("%w: refund %s is not in created status", store.ErrInvalidState, refundID)
 	}
 	if err != nil {
 		return domain.Refund{}, err
 	}
 
-	fee := domain.GripeFee(updated.AmountMinor)
-	if err := s.applyBalanceDelta(ctx, updated.MerchantID, updated.Currency, -(updated.AmountMinor - fee), -fee); err != nil {
+	// Locate the element we just flipped; merchant/currency come from the parent.
+	var elem refundElem
+	for _, r := range updated.Refunds {
+		if r.ID == refundID {
+			elem = r
+			break
+		}
+	}
+	if elem.ID == "" {
+		return domain.Refund{}, fmt.Errorf("refund %s vanished from payment %s after update", refundID, updated.ID)
+	}
+
+	fee := domain.GripeFee(elem.AmountMinor)
+	if err := s.applyBalanceDelta(ctx, updated.MerchantID, updated.Currency, -(elem.AmountMinor - fee), -fee); err != nil {
 		return domain.Refund{}, fmt.Errorf("settle refund balance debit: %w", err)
 	}
-	return updated.toDomain(), nil
+	return elem.toDomain(updated), nil
 }
 
 // SettleNetworkFee — fee-worker's mock network fee, set exactly once. SQS is
@@ -680,71 +745,95 @@ func decodeCursor(c domain.Cursor) (paymentCursor, error) {
 	return out, nil
 }
 
-// GetMerchantBalances — task 53. One row per currency the merchant has ever settled in.
-// Served by the prefix of the unique (merchant_id, currency) index — covered lookup + sort.
+// GetMerchantBalances — task 53. The whole per-currency ledger is one _id lookup:
+// balances lives as a map on the merchant doc. Sort in Go — a handful of currencies.
 func (s *Store) GetMerchantBalances(ctx context.Context, merchantID string) ([]domain.Balance, error) {
-	cur, err := s.db.Collection(colBalances).Find(ctx,
-		bson.M{"merchant_id": merchantID},
-		options.Find().SetSort(bson.D{{Key: "currency", Value: 1}}))
+	var d merchantDoc
+	err := s.db.Collection(colMerchants).FindOne(ctx, bson.M{"_id": merchantID}).Decode(&d)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return []domain.Balance{}, nil // unknown merchant: empty ledger, not an error
+	}
 	if err != nil {
 		return nil, err
 	}
-	defer cur.Close(ctx)
-
-	var docs []balanceDoc
-	if err := cur.All(ctx, &docs); err != nil {
-		return nil, err
+	currencies := make([]string, 0, len(d.Balances))
+	for c := range d.Balances {
+		currencies = append(currencies, c)
 	}
-	out := make([]domain.Balance, len(docs))
-	for i, d := range docs {
+	sort.Strings(currencies)
+	out := make([]domain.Balance, len(currencies))
+	for i, c := range currencies {
 		out[i] = domain.Balance{
-			Currency:     domain.Currency(d.Currency),
-			BalanceMinor: d.BalanceMinor,
-			FeesMinor:    d.FeesMinor,
+			Currency:     domain.Currency(c),
+			BalanceMinor: d.Balances[c].BalanceMinor,
+			FeesMinor:    d.Balances[c].FeesMinor,
 		}
 	}
 	return out, nil
 }
 
 // AdminBalanceReport — every merchant's per-currency balance + fees, ordered
-// (merchant_id, currency) asc. The sort IS the unique index — no in-memory sort.
+// (merchant_id, currency) asc. $objectToArray pivots the balances map into rows
+// server-side — the DB does the reshape + sort, Go only maps rows.
 func (s *Store) AdminBalanceReport(ctx context.Context) ([]domain.MerchantBalanceRow, error) {
-	cur, err := s.db.Collection(colBalances).Find(ctx, bson.M{},
-		options.Find().SetSort(bson.D{{Key: "merchant_id", Value: 1}, {Key: "currency", Value: 1}}))
+	pipeline := mongo.Pipeline{
+		{{Key: "$project", Value: bson.M{
+			"balances": bson.M{"$objectToArray": bson.M{"$ifNull": bson.A{"$balances", bson.M{}}}},
+		}}},
+		{{Key: "$unwind", Value: "$balances"}},
+		{{Key: "$project", Value: bson.M{
+			"_id":           0,
+			"merchant_id":   "$_id",
+			"currency":      "$balances.k",
+			"balance_minor": "$balances.v.balance_minor",
+			"fees_minor":    "$balances.v.fees_minor",
+		}}},
+		{{Key: "$sort", Value: bson.D{{Key: "merchant_id", Value: 1}, {Key: "currency", Value: 1}}}},
+	}
+	cur, err := s.db.Collection(colMerchants).Aggregate(ctx, pipeline)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("balance report aggregate: %w", err)
 	}
 	defer cur.Close(ctx)
 
-	var docs []balanceDoc
-	if err := cur.All(ctx, &docs); err != nil {
-		return nil, err
+	var rows []struct {
+		MerchantID   string `bson:"merchant_id"`
+		Currency     string `bson:"currency"`
+		BalanceMinor int64  `bson:"balance_minor"`
+		FeesMinor    int64  `bson:"fees_minor"`
 	}
-	out := make([]domain.MerchantBalanceRow, len(docs))
-	for i, d := range docs {
+	if err := cur.All(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("balance report decode: %w", err)
+	}
+	out := make([]domain.MerchantBalanceRow, len(rows))
+	for i, r := range rows {
 		out[i] = domain.MerchantBalanceRow{
-			MerchantID:   d.MerchantID,
-			Currency:     domain.Currency(d.Currency),
-			BalanceMinor: d.BalanceMinor,
-			FeesMinor:    d.FeesMinor,
+			MerchantID:   r.MerchantID,
+			Currency:     domain.Currency(r.Currency),
+			BalanceMinor: r.BalanceMinor,
+			FeesMinor:    r.FeesMinor,
 		}
 	}
 	return out, nil
 }
 
 // AdminRevenueReport — Gripe's fee take per currency. Revenue is derived from the
-// merchant_balances ledger (fees_minor already nets out refund fee returns), so a
-// single $group over that small collection is the whole report — no fee_ledger,
-// no re-scan of payments.
+// merchants' embedded balances (fees_minor already nets out refund fee returns):
+// $objectToArray pivots the map, then a single $group over the small merchants
+// collection is the whole report — no fee_ledger, no re-scan of payments.
 func (s *Store) AdminRevenueReport(ctx context.Context) ([]domain.CurrencyTotal, error) {
 	pipeline := mongo.Pipeline{
+		{{Key: "$project", Value: bson.M{
+			"balances": bson.M{"$objectToArray": bson.M{"$ifNull": bson.A{"$balances", bson.M{}}}},
+		}}},
+		{{Key: "$unwind", Value: "$balances"}},
 		{{Key: "$group", Value: bson.M{
-			"_id":         "$currency",
-			"total_minor": bson.M{"$sum": "$fees_minor"},
+			"_id":         "$balances.k",
+			"total_minor": bson.M{"$sum": "$balances.v.fees_minor"},
 		}}},
 		{{Key: "$sort", Value: bson.D{{Key: "_id", Value: 1}}}},
 	}
-	cur, err := s.db.Collection(colBalances).Aggregate(ctx, pipeline)
+	cur, err := s.db.Collection(colMerchants).Aggregate(ctx, pipeline)
 	if err != nil {
 		return nil, fmt.Errorf("revenue report aggregate: %w", err)
 	}
@@ -880,6 +969,10 @@ func (s *Store) CreateSubscription(ctx context.Context, in domain.CreateSubscrip
 	}
 	if !in.Cadence.Valid() {
 		return domain.Subscription{}, fmt.Errorf("%w: cadence %q", store.ErrInvalidState, in.Cadence)
+	}
+	// Same implicit onboarding as CreatePayment (crash between = harmless orphan).
+	if err := s.onboardActors(ctx, in.MerchantID, in.CustomerID); err != nil {
+		return domain.Subscription{}, err
 	}
 	start := in.StartAt
 	if start.IsZero() {

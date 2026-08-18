@@ -18,7 +18,7 @@ pg_password = "change-me-something-long"
 # for functional parity while we're building. For the perf comparison against Atlas M30
 # (8 GB), uncomment the line below to swap to db.m6g.large (~$125/mo). Apply again;
 # RDS does an in-place resize with brief downtime.
-# pg_instance_class = "db.m6g.large"
+# pg_cluster_instance_class = "db.m6gd.large"  # per node, 3-node Multi-AZ cluster
 
 # Atlas connection string (you own this cluster; Terraform doesn't create it).
 # Any other secrets the app needs can go in here too.

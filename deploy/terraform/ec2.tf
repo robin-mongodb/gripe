@@ -74,8 +74,10 @@ locals {
     GRIPE_BACKEND           = "mongo"
     API_ADDR                = ":8080"
     AWS_REGION              = var.aws_region
-    PG_WRITER_DSN           = "postgres://${var.pg_username}:${var.pg_password}@${aws_db_instance.pg.address}:5432/${var.pg_database}?sslmode=require"
-    PG_READER_DSN           = "postgres://${var.pg_username}:${var.pg_password}@${aws_db_instance.pg.address}:5432/${var.pg_database}?sslmode=require"
+    # Both DSNs hit the writer: Mongo reads primary by default, so reading the
+    # PG standbys would skew the comparison. reader_endpoint exists if wanted.
+    PG_WRITER_DSN           = "postgres://${var.pg_username}:${var.pg_password}@${aws_rds_cluster.pg.endpoint}:5432/${var.pg_database}?sslmode=require"
+    PG_READER_DSN           = "postgres://${var.pg_username}:${var.pg_password}@${aws_rds_cluster.pg.endpoint}:5432/${var.pg_database}?sslmode=require"
     SQS_PAYMENT_CREATED_URL = aws_sqs_queue.payment_created.url
     SQS_FRAUD_URL           = aws_sqs_queue.fraud.url
     SQS_FEE_URL             = aws_sqs_queue.fee.url
@@ -99,7 +101,7 @@ resource "aws_instance" "app" {
   })
 
   root_block_device {
-    volume_size = 20
+    volume_size = 30 # AMI snapshot minimum; 20 fails with InvalidBlockDeviceMapping
     volume_type = "gp3"
     encrypted   = true
   }

@@ -32,16 +32,16 @@ variable "ec2_instance_type" {
   description = "EC2 size. t3.small is enough for the demo (~$8/2wk)."
 }
 
-variable "pg_instance_class" {
+variable "pg_cluster_instance_class" {
   type        = string
-  default     = "db.t4g.micro"
-  description = "RDS instance class. db.t4g.micro is Graviton-backed, cheapest that supports PG 16."
+  default     = "db.m6gd.large"
+  description = "Instance class for each of the 3 Multi-AZ DB cluster nodes. db.m6gd.large (2 vCPU / 8 GB, Graviton) ≈ one Atlas M30 node. Multi-AZ clusters only support d-suffix (NVMe) classes."
 }
 
 variable "pg_allocated_storage_gb" {
   type        = number
-  default     = 20
-  description = "gp3 storage in GB. 20 is the minimum for RDS PG."
+  default     = 100
+  description = "gp3 storage in GB per node. 100 is the minimum for a Multi-AZ DB cluster."
 }
 
 variable "pg_version" {

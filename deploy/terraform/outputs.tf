@@ -9,8 +9,13 @@ output "ssh_command" {
 }
 
 output "rds_endpoint" {
-  value       = aws_db_instance.pg.address
-  description = "RDS Postgres endpoint (private — only reachable from the EC2 SG)."
+  value       = aws_rds_cluster.pg.endpoint
+  description = "RDS Postgres cluster writer endpoint (private — only reachable from the EC2 SG)."
+}
+
+output "rds_reader_endpoint" {
+  value       = aws_rds_cluster.pg.reader_endpoint
+  description = "Load-balanced endpoint for the two readable standbys. Unused by the app (reads go to the writer for parity with Mongo primary reads)."
 }
 
 output "sqs_urls" {

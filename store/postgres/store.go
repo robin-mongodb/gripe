@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -32,6 +33,11 @@ var migrationsFS embed.FS
 
 type Store struct {
 	pool *pgxpool.Pool
+	// seen caches actor IDs already onboarded ("m:"/"c:" prefixed) — mirror of the
+	// Mongo store's cache so the perf comparison stays apples-to-apples. Merchants
+	// and customers are never deleted, so seen-once == exists. Populated only after
+	// a successful commit (a rolled-back tx must not poison the cache).
+	seen sync.Map
 }
 
 // New opens a pool, pings, and runs pending migrations.
@@ -152,7 +158,7 @@ func (s *Store) CreatePayment(ctx context.Context, in domain.CreatePaymentInput,
 		return domain.Payment{}, err
 	}
 	defer tx.Rollback(ctx)
-	if err := upsertParties(ctx, tx, p.MerchantID, p.CustomerID); err != nil {
+	if err := s.upsertParties(ctx, tx, p.MerchantID, p.CustomerID); err != nil {
 		return domain.Payment{}, err
 	}
 	_, err = tx.Exec(ctx, `
@@ -166,23 +172,35 @@ func (s *Store) CreatePayment(ctx context.Context, in domain.CreatePaymentInput,
 	if err := tx.Commit(ctx); err != nil {
 		return domain.Payment{}, err
 	}
+	s.markSeen(p.MerchantID, p.CustomerID)
 	return p, nil
 }
 
 // upsertParties implicitly onboards the merchant and customer rows a payment or
-// subscription references. ON CONFLICT DO NOTHING makes repeats a no-op.
-func upsertParties(ctx context.Context, tx pgx.Tx, merchantID, customerID string) error {
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO merchants (id, created_at) VALUES ($1, now())
-		ON CONFLICT (id) DO NOTHING`, merchantID); err != nil {
-		return fmt.Errorf("upsert merchant: %w", err)
+// subscription references. ON CONFLICT DO NOTHING makes repeats a no-op; the
+// seen cache skips the round trips entirely once an actor is known committed.
+func (s *Store) upsertParties(ctx context.Context, tx pgx.Tx, merchantID, customerID string) error {
+	if _, ok := s.seen.Load("m:" + merchantID); !ok {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO merchants (id, created_at) VALUES ($1, now())
+			ON CONFLICT (id) DO NOTHING`, merchantID); err != nil {
+			return fmt.Errorf("upsert merchant: %w", err)
+		}
 	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO customers (id, created_at) VALUES ($1, now())
-		ON CONFLICT (id) DO NOTHING`, customerID); err != nil {
-		return fmt.Errorf("upsert customer: %w", err)
+	if _, ok := s.seen.Load("c:" + customerID); !ok {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO customers (id, created_at) VALUES ($1, now())
+			ON CONFLICT (id) DO NOTHING`, customerID); err != nil {
+			return fmt.Errorf("upsert customer: %w", err)
+		}
 	}
 	return nil
+}
+
+// markSeen records committed actors; call only after tx.Commit succeeds.
+func (s *Store) markSeen(merchantID, customerID string) {
+	s.seen.Store("m:"+merchantID, struct{}{})
+	s.seen.Store("c:"+customerID, struct{}{})
 }
 
 func (s *Store) GetPayment(ctx context.Context, id string, actor domain.Actor) (domain.Payment, error) {
@@ -468,7 +486,7 @@ func (s *Store) CreateSubscription(ctx context.Context, in domain.CreateSubscrip
 		return domain.Subscription{}, err
 	}
 	defer tx.Rollback(ctx)
-	if err := upsertParties(ctx, tx, sub.MerchantID, sub.CustomerID); err != nil {
+	if err := s.upsertParties(ctx, tx, sub.MerchantID, sub.CustomerID); err != nil {
 		return domain.Subscription{}, err
 	}
 	_, err = tx.Exec(ctx, `
@@ -483,6 +501,7 @@ func (s *Store) CreateSubscription(ctx context.Context, in domain.CreateSubscrip
 	if err := tx.Commit(ctx); err != nil {
 		return domain.Subscription{}, err
 	}
+	s.markSeen(sub.MerchantID, sub.CustomerID)
 	return sub, nil
 }
 

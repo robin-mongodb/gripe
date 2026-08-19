@@ -427,6 +427,36 @@ func RunStoreContract(t *testing.T, s store.Store) {
 		}
 	})
 
+	t.Run("ListMerchantPayments_cursor_loses_nothing", func(t *testing.T) {
+		// Same-instant inserts stress the (created_at, id) keyset tiebreak: a broken
+		// tiebreak drops or repeats rows at page boundaries. Walk every page for
+		// mer_P (51 payments from the previous subtest) and demand all distinct ids.
+		seen := map[string]bool{}
+		cursor := domain.Cursor("")
+		for pages := 0; ; pages++ {
+			if pages > 5 {
+				t.Fatal("cursor never terminated")
+			}
+			page, err := s.ListMerchantPayments(ctx, "mer_P", domain.Filters{}, cursor)
+			if err != nil {
+				t.Fatalf("page %d: %v", pages, err)
+			}
+			for _, p := range page.Items {
+				if seen[p.ID] {
+					t.Fatalf("id %s repeated across pages", p.ID)
+				}
+				seen[p.ID] = true
+			}
+			if page.NextCursor == "" {
+				break
+			}
+			cursor = page.NextCursor
+		}
+		if len(seen) != 51 {
+			t.Fatalf("keyset walk lost rows: want 51 distinct, got %d", len(seen))
+		}
+	})
+
 	t.Run("ListAllPayments_admin_sees_across_merchants", func(t *testing.T) {
 		// Admin filter by merchant_id must work regardless of page saturation from earlier subtests.
 		for _, mid := range []string{"mer_L", "mer_M"} {

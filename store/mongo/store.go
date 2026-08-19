@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -39,11 +40,18 @@ const (
 type Store struct {
 	client *mongo.Client
 	db     *mongo.Database
+	// seen caches actor IDs already onboarded ("m:"/"c:" prefixed). Merchants and
+	// customers are never deleted, so seen-once == exists; skips 2 upserts per
+	// create at steady state (task 42). Process-local: a cold process re-upserts
+	// once per actor, which is harmless (idempotent $setOnInsert).
+	seen sync.Map
 }
 
 // New opens a Mongo client, pings, and ensures the indexes this impl needs.
 func New(ctx context.Context, uri, dbName string) (*Store, error) {
-	client, err := mongo.Connect(options.Client().ApplyURI(uri))
+	// maxPoolSize 200 (default 100): under stress, in-flight ops exceed 100 and
+	// requests queue in the API waiting for a connection (task 42 finding).
+	client, err := mongo.Connect(options.Client().ApplyURI(uri).SetMaxPoolSize(200))
 	if err != nil {
 		return nil, fmt.Errorf("mongo connect: %w", err)
 	}
@@ -65,7 +73,11 @@ func (s *Store) Ping(ctx context.Context) error  { return s.client.Ping(ctx, nil
 // ensureIndexes creates the indexes tasks 8/17 need. Full schema comes later (tasks 10/11).
 func (s *Store) ensureIndexes(ctx context.Context) error {
 	_, err := s.db.Collection(colPayments).Indexes().CreateMany(ctx, []mongo.IndexModel{
-		{Keys: bson.D{{Key: "merchant_id", Value: 1}, {Key: "created_at", Value: -1}}},
+		// _id in the key so the (created_at, _id) keyset sort is fully index-order —
+		// without it every merchant list pays an in-memory sort (task 42 finding).
+		{Keys: bson.D{{Key: "merchant_id", Value: 1}, {Key: "created_at", Value: -1}, {Key: "_id", Value: -1}}},
+		// Same, for the unscoped admin list (PG parity: (created_at DESC, id DESC)).
+		{Keys: bson.D{{Key: "created_at", Value: -1}, {Key: "_id", Value: -1}}},
 		// Multikey index so SettleRefund can address an embedded refund by ID.
 		// Non-unique on purpose: a unique index on an array path indexes null for
 		// docs with an empty/missing array, so the second refund-less payment
@@ -115,19 +127,25 @@ type merchantDoc struct {
 // sight. $setOnInsert-with-upsert is idempotent: repeat pairs are no-ops.
 func (s *Store) onboardActors(ctx context.Context, merchantID, customerID string) error {
 	now := time.Now().UTC()
-	_, err := s.db.Collection(colMerchants).UpdateOne(ctx,
-		bson.M{"_id": merchantID},
-		bson.M{"$setOnInsert": bson.M{"created_at": now, "balances": bson.M{}}},
-		options.UpdateOne().SetUpsert(true))
-	if err != nil {
-		return fmt.Errorf("onboard merchant: %w", err)
+	if _, ok := s.seen.Load("m:" + merchantID); !ok {
+		_, err := s.db.Collection(colMerchants).UpdateOne(ctx,
+			bson.M{"_id": merchantID},
+			bson.M{"$setOnInsert": bson.M{"created_at": now, "balances": bson.M{}}},
+			options.UpdateOne().SetUpsert(true))
+		if err != nil {
+			return fmt.Errorf("onboard merchant: %w", err)
+		}
+		s.seen.Store("m:"+merchantID, struct{}{})
 	}
-	_, err = s.db.Collection(colCustomers).UpdateOne(ctx,
-		bson.M{"_id": customerID},
-		bson.M{"$setOnInsert": bson.M{"created_at": now}},
-		options.UpdateOne().SetUpsert(true))
-	if err != nil {
-		return fmt.Errorf("onboard customer: %w", err)
+	if _, ok := s.seen.Load("c:" + customerID); !ok {
+		_, err := s.db.Collection(colCustomers).UpdateOne(ctx,
+			bson.M{"_id": customerID},
+			bson.M{"$setOnInsert": bson.M{"created_at": now}},
+			options.UpdateOne().SetUpsert(true))
+		if err != nil {
+			return fmt.Errorf("onboard customer: %w", err)
+		}
+		s.seen.Store("c:"+customerID, struct{}{})
 	}
 	return nil
 }

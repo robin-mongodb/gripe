@@ -1,0 +1,367 @@
+<!doctype html>
+<!-- Data-model reference: the same domain modeled idiomatically twice.
+     PG: normalized ERD with FK integrity (source: store/postgres/migrations/00004).
+     Mongo: collections with embedding (source: store/mongo/store.go doc structs).
+     Self-contained — open directly in a browser. Keep in sync with the migrations
+     and doc structs when the schema changes. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gripe data models — PostgreSQL ERD vs MongoDB collections</title>
+<style>
+  .viz-root {
+    color-scheme: light;
+    --surface-1: #fcfcfb;
+    --page: #f9f9f7;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted: #898781;
+    --grid: #e1e0d9;
+    --border: rgba(11,11,11,0.10);
+    --accent: #2a78d6;      /* entity header + FK lines */
+    --embed: #eb6834;       /* embedded-doc highlight */
+    --embed-wash: rgba(235,104,52,0.08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz-root {
+      color-scheme: dark;
+      --surface-1: #1a1a19; --page: #0d0d0d;
+      --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #898781;
+      --grid: #2c2c2a; --border: rgba(255,255,255,0.10);
+      --accent: #3987e5; --embed: #d95926; --embed-wash: rgba(217,89,38,0.12);
+    }
+  }
+  :root[data-theme="dark"] .viz-root {
+    color-scheme: dark;
+    --surface-1: #1a1a19; --page: #0d0d0d;
+    --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #898781;
+    --grid: #2c2c2a; --border: rgba(255,255,255,0.10);
+    --accent: #3987e5; --embed: #d95926; --embed-wash: rgba(217,89,38,0.12);
+  }
+  * { box-sizing: border-box; }
+  body.viz-root { margin: 0; background: var(--page); color: var(--text-primary);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1180px; margin: 0 auto; padding: 32px 24px 64px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--text-secondary); margin: 0 0 24px; max-width: 900px; }
+  section { background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 10px; padding: 20px; margin: 0 0 24px; }
+  section h2 { font-size: 16px; margin: 0 0 2px; }
+  section .hint { color: var(--text-muted); font-size: 12.5px; margin: 0 0 16px; }
+  .canvas { position: relative; }
+  .canvas svg.wires { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .wires line, .wires path { stroke: var(--accent); stroke-width: 1.5; fill: none; }
+  .wires .ref { stroke: var(--text-muted); stroke-dasharray: 4 4; }
+  .wires text { font: 10.5px system-ui, sans-serif; fill: var(--text-muted); }
+  .grid { display: grid; gap: 40px 56px; position: relative; z-index: 1; }
+  .pg-grid { grid-template-columns: repeat(3, 1fr); }
+  .mongo-grid { grid-template-columns: repeat(3, 1fr); }
+  .entity { background: var(--surface-1); border: 1px solid var(--grid);
+    border-radius: 8px; overflow: hidden; align-self: start;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+  .entity header { padding: 7px 12px; font-weight: 600; font-size: 13px;
+    border-bottom: 2px solid var(--accent); display: flex; justify-content: space-between; align-items: baseline; }
+  .entity header .kind { font-weight: 400; font-size: 10.5px; color: var(--text-muted); }
+  .entity table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  .entity td { padding: 3.5px 12px; border-top: 1px solid var(--grid); vertical-align: baseline; }
+  .entity tr:first-child td { border-top: 0; }
+  .entity td.t { color: var(--text-muted); text-align: right; font-size: 11px; white-space: nowrap; }
+  .entity .name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
+  .badge { display: inline-block; font-size: 9px; font-weight: 700; letter-spacing: .4px;
+    border-radius: 3px; padding: 0 4px; margin-left: 6px; vertical-align: 1px; }
+  .pk { background: var(--accent); color: #fff; }
+  .fk { border: 1px solid var(--accent); color: var(--accent); }
+  .ck { border: 1px solid var(--grid); color: var(--text-muted); }
+  .entity footer { padding: 6px 12px 8px; font-size: 10.5px; color: var(--text-muted);
+    border-top: 1px solid var(--grid); }
+  .embedded { margin: 6px 10px 10px; border: 1px dashed var(--embed); border-radius: 6px;
+    background: var(--embed-wash); }
+  .embedded .cap { padding: 4px 10px 0; font-size: 11px; font-weight: 600; color: var(--embed); }
+  .embedded .cap .kind { font-weight: 400; color: var(--text-muted); }
+  .embedded table { font-size: 11.5px; }
+  .embedded td { border-top-color: transparent; padding: 2.5px 10px; }
+  .lgnd { display: flex; flex-wrap: wrap; gap: 18px; font-size: 12px; color: var(--text-secondary); margin: 14px 0 0; }
+  .lgnd span { display: inline-flex; align-items: center; gap: 6px; }
+  .lgnd .solid { width: 22px; border-top: 1.5px solid var(--accent); }
+  .lgnd .dash { width: 22px; border-top: 1.5px dashed var(--text-muted); }
+  .lgnd .emb { width: 14px; height: 10px; border: 1px dashed var(--embed); background: var(--embed-wash); border-radius: 2px; }
+  .diff { color: var(--text-secondary); font-size: 13px; }
+  .diff th, .diff td { text-align: left; padding: 6px 12px 6px 0; vertical-align: top; border-bottom: 1px solid var(--grid); }
+  .diff th { color: var(--text-secondary); }
+  .toggle { float: right; font-size: 12px; color: var(--text-secondary); background: none;
+    border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .92em; }
+</style>
+</head>
+<body class="viz-root">
+<main>
+  <button class="toggle" id="themeToggle" type="button">Toggle dark</button>
+  <h1>Gripe data models: one domain, modeled twice</h1>
+  <p class="sub">The same payments domain behind one <code>Store</code> interface, shaped idiomatically per
+    backend. PostgreSQL normalizes with foreign-key integrity (<code>store/postgres/migrations/00004</code>);
+    MongoDB embeds where access patterns are single-document
+    (<code>store/mongo/store.go</code>). Money is <code>int64</code> minor units everywhere.</p>
+
+  <section>
+    <h2>PostgreSQL — normalized ERD (6 tables)</h2>
+    <p class="hint">All FKs are <code>ON DELETE RESTRICT</code> — financial records; deletes should be loud. Enums enforced by CHECK constraints.</p>
+    <div class="canvas" id="pg-canvas">
+      <svg class="wires" id="pg-wires"></svg>
+      <div class="grid pg-grid">
+        <div class="entity" id="pg-merchants">
+          <header>merchants <span class="kind">table</span></header>
+          <table>
+            <tr><td class="name">id<span class="badge pk">PK</span></td><td class="t">text</td></tr>
+            <tr><td class="name">created_at</td><td class="t">timestamptz</td></tr>
+          </table>
+        </div>
+        <div class="entity" id="pg-customers">
+          <header>customers <span class="kind">table</span></header>
+          <table>
+            <tr><td class="name">id<span class="badge pk">PK</span></td><td class="t">text</td></tr>
+            <tr><td class="name">created_at</td><td class="t">timestamptz</td></tr>
+          </table>
+        </div>
+        <div class="entity" id="pg-idem">
+          <header>idempotency_keys <span class="kind">table</span></header>
+          <table>
+            <tr><td class="name">key<span class="badge pk">PK</span></td><td class="t">text</td></tr>
+            <tr><td class="name">actor_role, actor_id</td><td class="t">text</td></tr>
+            <tr><td class="name">body_hash</td><td class="t">text</td></tr>
+            <tr><td class="name">status</td><td class="t">integer</td></tr>
+            <tr><td class="name">response</td><td class="t">bytea</td></tr>
+            <tr><td class="name">created_at, expires_at</td><td class="t">timestamptz</td></tr>
+          </table>
+          <footer>references nothing — API-layer replay cache; lazy expiry via <code>expires_at</code> index</footer>
+        </div>
+        <div class="entity" id="pg-payments">
+          <header>payments <span class="kind">table</span></header>
+          <table>
+            <tr><td class="name">id<span class="badge pk">PK</span></td><td class="t">text</td></tr>
+            <tr><td class="name">merchant_id<span class="badge fk">FK</span></td><td class="t">text</td></tr>
+            <tr><td class="name">customer_id<span class="badge fk">FK</span></td><td class="t">text</td></tr>
+            <tr><td class="name">amount_minor<span class="badge ck">&gt;0</span></td><td class="t">bigint</td></tr>
+            <tr><td class="name">currency<span class="badge ck">CHECK</span></td><td class="t">text</td></tr>
+            <tr><td class="name">method<span class="badge ck">CHECK</span></td><td class="t">text</td></tr>
+            <tr><td class="name">status<span class="badge ck">CHECK</span></td><td class="t">text</td></tr>
+            <tr><td class="name">refunded_minor<span class="badge ck">≤ amount</span></td><td class="t">bigint</td></tr>
+            <tr><td class="name">network_fee_minor</td><td class="t">bigint null</td></tr>
+            <tr><td class="name">created_at, updated_at</td><td class="t">timestamptz</td></tr>
+          </table>
+          <footer>idx: (merchant_id, created_at↓, id↓) · (created_at↓, id↓) · (customer_id)</footer>
+        </div>
+        <div class="entity" id="pg-subs">
+          <header>subscriptions <span class="kind">table</span></header>
+          <table>
+            <tr><td class="name">id<span class="badge pk">PK</span></td><td class="t">text</td></tr>
+            <tr><td class="name">merchant_id<span class="badge fk">FK</span></td><td class="t">text</td></tr>
+            <tr><td class="name">customer_id<span class="badge fk">FK</span></td><td class="t">text</td></tr>
+            <tr><td class="name">amount_minor, currency, method</td><td class="t">…</td></tr>
+            <tr><td class="name">cadence<span class="badge ck">CHECK</span></td><td class="t">text</td></tr>
+            <tr><td class="name">status<span class="badge ck">CHECK</span></td><td class="t">text</td></tr>
+            <tr><td class="name">next_charge_at</td><td class="t">timestamptz</td></tr>
+            <tr><td class="name">next_cycle_index</td><td class="t">bigint</td></tr>
+          </table>
+          <footer>idx: (status, next_charge_at) — the cycler scan</footer>
+        </div>
+        <div class="entity" id="pg-balances">
+          <header>merchant_balances <span class="kind">table</span></header>
+          <table>
+            <tr><td class="name">merchant_id<span class="badge pk">PK</span><span class="badge fk">FK</span></td><td class="t">text</td></tr>
+            <tr><td class="name">currency<span class="badge pk">PK</span></td><td class="t">text</td></tr>
+            <tr><td class="name">balance_minor</td><td class="t">bigint</td></tr>
+            <tr><td class="name">fees_minor</td><td class="t">bigint</td></tr>
+          </table>
+          <footer>one row per (merchant, currency); upserted on settle</footer>
+        </div>
+        <div class="entity" id="pg-refunds" style="grid-column: 1;">
+          <header>refunds <span class="kind">table</span></header>
+          <table>
+            <tr><td class="name">id<span class="badge pk">PK</span></td><td class="t">text</td></tr>
+            <tr><td class="name">payment_id<span class="badge fk">FK</span></td><td class="t">text</td></tr>
+            <tr><td class="name">amount_minor<span class="badge ck">&gt;0</span></td><td class="t">bigint</td></tr>
+            <tr><td class="name">status<span class="badge ck">CHECK</span></td><td class="t">text</td></tr>
+            <tr><td class="name">created_at</td><td class="t">timestamptz</td></tr>
+          </table>
+          <footer>fully normalized: merchant + currency derive from the parent payment via JOIN</footer>
+        </div>
+      </div>
+    </div>
+    <div class="lgnd">
+      <span><span class="solid"></span> foreign key (N → 1, ON DELETE RESTRICT)</span>
+      <span><span class="badge pk" style="position:static">PK</span> primary key</span>
+      <span><span class="badge fk" style="position:static">FK</span> foreign key</span>
+      <span><span class="badge ck" style="position:static">CHECK</span> constraint-enforced enum/rule</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>MongoDB — collections with embedding (5 collections)</h2>
+    <p class="hint">Refunds live <em>inside</em> their payment (bounded array: Σ refunds ≤ amount) so a refund is one atomic document update. Balances are a currency-keyed map inside the merchant, so a settle is one <code>$inc</code>. No FKs — integrity comes from the Store's implicit onboarding.</p>
+    <div class="canvas" id="mongo-canvas">
+      <svg class="wires" id="mongo-wires"></svg>
+      <div class="grid mongo-grid">
+        <div class="entity" id="m-merchants">
+          <header>merchants <span class="kind">collection</span></header>
+          <table>
+            <tr><td class="name">_id<span class="badge pk">PK</span></td><td class="t">string</td></tr>
+            <tr><td class="name">created_at</td><td class="t">date</td></tr>
+          </table>
+          <div class="embedded">
+            <div class="cap">balances <span class="kind">embedded map, keyed by currency</span></div>
+            <table>
+              <tr><td class="name">GBP.balance_minor</td><td class="t">long</td></tr>
+              <tr><td class="name">GBP.fees_minor</td><td class="t">long</td></tr>
+              <tr><td class="name">USD.… EUR.…</td><td class="t"></td></tr>
+            </table>
+          </div>
+          <footer>settle = one atomic dotted-path <code>$inc</code> upsert; closed 3-currency enum keeps the map bounded</footer>
+        </div>
+        <div class="entity" id="m-payments">
+          <header>payments <span class="kind">collection</span></header>
+          <table>
+            <tr><td class="name">_id<span class="badge pk">PK</span></td><td class="t">string</td></tr>
+            <tr><td class="name">merchant_id</td><td class="t">string</td></tr>
+            <tr><td class="name">customer_id</td><td class="t">string</td></tr>
+            <tr><td class="name">amount_minor</td><td class="t">long</td></tr>
+            <tr><td class="name">currency, method, status</td><td class="t">string</td></tr>
+            <tr><td class="name">refunded_minor</td><td class="t">long</td></tr>
+            <tr><td class="name">network_fee_minor</td><td class="t">long?</td></tr>
+            <tr><td class="name">created_at, updated_at</td><td class="t">date</td></tr>
+          </table>
+          <div class="embedded">
+            <div class="cap">refunds [ ] <span class="kind">embedded array, bounded</span></div>
+            <table>
+              <tr><td class="name">id</td><td class="t">string</td></tr>
+              <tr><td class="name">amount_minor</td><td class="t">long</td></tr>
+              <tr><td class="name">status</td><td class="t">string</td></tr>
+              <tr><td class="name">created_at</td><td class="t">date</td></tr>
+            </table>
+          </div>
+          <footer>refund = single-doc atomic pipeline update (guard + $inc + append + status flip)<br>
+            idx: (merchant_id, created_at↓, _id↓) · (created_at↓, _id↓) · multikey (refunds.id)</footer>
+        </div>
+        <div class="entity" id="m-customers">
+          <header>customers <span class="kind">collection</span></header>
+          <table>
+            <tr><td class="name">_id<span class="badge pk">PK</span></td><td class="t">string</td></tr>
+            <tr><td class="name">created_at</td><td class="t">date</td></tr>
+          </table>
+          <footer>thin on purpose: unbounded per merchant and never listed by merchant — embedding would be the unbounded-array antipattern</footer>
+        </div>
+        <div class="entity" id="m-subs">
+          <header>subscriptions <span class="kind">collection</span></header>
+          <table>
+            <tr><td class="name">_id<span class="badge pk">PK</span></td><td class="t">string</td></tr>
+            <tr><td class="name">merchant_id, customer_id</td><td class="t">string</td></tr>
+            <tr><td class="name">amount_minor</td><td class="t">long</td></tr>
+            <tr><td class="name">currency, method, cadence, status</td><td class="t">string</td></tr>
+            <tr><td class="name">next_charge_at</td><td class="t">date</td></tr>
+            <tr><td class="name">next_cycle_index</td><td class="t">long</td></tr>
+          </table>
+          <footer>idx: (status, next_charge_at) — same cycler scan as PG</footer>
+        </div>
+        <div class="entity" id="m-idem">
+          <header>idempotency_keys <span class="kind">collection</span></header>
+          <table>
+            <tr><td class="name">_id<span class="badge pk">PK</span> (the key)</td><td class="t">string</td></tr>
+            <tr><td class="name">actor_role, actor_id</td><td class="t">string</td></tr>
+            <tr><td class="name">body_hash</td><td class="t">string</td></tr>
+            <tr><td class="name">status</td><td class="t">int</td></tr>
+            <tr><td class="name">response</td><td class="t">binData</td></tr>
+            <tr><td class="name">created_at, expires_at</td><td class="t">date</td></tr>
+          </table>
+          <footer>TTL index on <code>expires_at</code> — Mongo vacuums expired keys itself (PG expires lazily in code)</footer>
+        </div>
+      </div>
+    </div>
+    <div class="lgnd">
+      <span><span class="dash"></span> app-level reference by id (no FK — integrity via implicit onboarding)</span>
+      <span><span class="emb"></span> embedded document (lives inside its parent; written atomically with it)</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>Same domain, different joints</h2>
+    <table class="diff">
+      <tr><th>Concern</th><th>PostgreSQL</th><th>MongoDB</th></tr>
+      <tr><td>Refunds</td><td>own table, FK to payments; merchant/currency recovered by JOIN</td><td>embedded array in the payment; one atomic document update, no transaction</td></tr>
+      <tr><td>Merchant balances</td><td>own table, PK (merchant_id, currency), upsert per settle</td><td>currency-keyed map inside the merchant doc; one <code>$inc</code></td></tr>
+      <tr><td>Integrity</td><td>FKs + CHECKs enforced by the database</td><td>enforced by the Store (implicit onboarding upserts parents first)</td></tr>
+      <tr><td>Multi-step writes</td><td>transactions (create = parents + payment in one tx)</td><td>designed away — money paths are single-document where it matters</td></tr>
+      <tr><td>Idempotency expiry</td><td>plain column, lazy check in code</td><td>TTL index, server-side</td></tr>
+      <tr><td>Schema change</td><td>goose migration (00004 drop/recreate)</td><td>code only — <code>ensureIndexes</code> on boot</td></tr>
+      <tr><td>Customers/merchants</td><td colspan="2" style="text-align:left">identical on both: thin first-class entities, created implicitly on first payment/subscription</td></tr>
+    </table>
+  </section>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  document.getElementById("themeToggle").addEventListener("click", () => {
+    const root = document.documentElement;
+    const dark = root.dataset.theme === "dark" ||
+      (!root.dataset.theme && matchMedia("(prefers-color-scheme: dark)").matches);
+    root.dataset.theme = dark ? "light" : "dark";
+  });
+
+  // Wires: drawn after layout from live element positions, so they survive
+  // reflow. Solid = FK (PG), dashed = app-level reference (Mongo).
+  const PG_EDGES = [
+    ["pg-payments", "pg-merchants", "N:1", false],
+    ["pg-payments", "pg-customers", "N:1", false],
+    ["pg-subs", "pg-merchants", "N:1", false],
+    ["pg-subs", "pg-customers", "N:1", false],
+    ["pg-refunds", "pg-payments", "N:1", false],
+    ["pg-balances", "pg-merchants", "N:1", false],
+  ];
+  const MONGO_EDGES = [
+    ["m-payments", "m-merchants", "by merchant_id", true],
+    ["m-payments", "m-customers", "by customer_id", true],
+    ["m-subs", "m-merchants", "by merchant_id", true],
+    ["m-subs", "m-customers", "by customer_id", true],
+  ];
+
+  function draw(canvasId, svgId, edges) {
+    const canvas = document.getElementById(canvasId);
+    const svg = document.getElementById(svgId);
+    const cr = canvas.getBoundingClientRect();
+    svg.setAttribute("viewBox", `0 0 ${cr.width} ${cr.height}`);
+    svg.replaceChildren();
+    edges.forEach(([fromId, toId, , dashed], i) => {
+      const a = document.getElementById(fromId).getBoundingClientRect();
+      const b = document.getElementById(toId).getBoundingClientRect();
+      // connect nearest vertical edges; stagger anchor heights so parallel
+      // wires (and their endpoints) never sit on top of each other
+      const ax = a.left < b.left ? a.right - cr.left : a.left - cr.left;
+      const bx = a.left < b.left ? b.left - cr.left : b.right - cr.left;
+      const sameCol = Math.abs(a.left - b.left) < 40;
+      const ay = a.top - cr.top + 16 + (i % 3) * 16;
+      const by = b.top - cr.top + 16 + (i % 3) * 16;
+      const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      let d;
+      if (sameCol) { // vertical neighbors: hook out the right side (left may be off-canvas)
+        const x = (a.right - cr.left) + 20;
+        d = `M${a.right - cr.left},${ay} H${x} V${by} H${b.right - cr.left}`;
+      } else {
+        const midx = (ax + bx) / 2;
+        d = `M${ax},${ay} C${midx},${ay} ${midx},${by} ${bx},${by}`;
+      }
+      p.setAttribute("d", d);
+      if (dashed) p.setAttribute("class", "ref");
+      svg.appendChild(p);
+    });
+  }
+
+  function drawAll() {
+    draw("pg-canvas", "pg-wires", PG_EDGES);
+    draw("mongo-canvas", "mongo-wires", MONGO_EDGES);
+  }
+  drawAll();
+  addEventListener("resize", drawAll);
+})();
+</script>
+</body>
+</html>

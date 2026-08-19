@@ -17,8 +17,10 @@ DURATION="${3:-2m}"
 : "${MONGO_URI:?MONGO_URI not set (perf/.env or env)}"
 : "${BASE:?BASE not set, e.g. BASE=http://<app-private-ip>:8080/v1}"
 
+# k6 exits non-zero when thresholds are crossed — that's data, not a failure;
+# persist the summary regardless.
 k6 run -e BASE="$BASE" -e MERCHANTS=50 -e RATE="$RATE" -e DURATION="$DURATION" \
-  -e LABEL="$LABEL" scenarios.js
+  -e LABEL="$LABEL" scenarios.js || echo "k6 exit $? (thresholds crossed) — persisting anyway"
 
 GIT_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 FILE="results-$LABEL.json"

@@ -1,0 +1,438 @@
+<!doctype html>
+<!-- Task 43: MongoDB Atlas M30 vs RDS PostgreSQL Multi-AZ cluster perf comparison.
+     Self-contained: data embedded below in #perf-data; charts render client-side.
+     Source of truth for raw runs: Atlas gripe_perf.results (see perf/run-perf.sh).
+     PNG export: open with ?png=baseline|stress|tuning and screenshot (docs/perf/make-pngs.sh). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gripe perf report — MongoDB vs PostgreSQL</title>
+<style>
+  .viz-root {
+    color-scheme: light;
+    --surface-1: #fcfcfb;
+    --page: #f9f9f7;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted: #898781;
+    --grid: #e1e0d9;
+    --axis: #c3c2b7;
+    --border: rgba(11,11,11,0.10);
+    --series-1: #2a78d6;   /* MongoDB */
+    --series-2: #eb6834;   /* PostgreSQL */
+    --ramp-before: #86b6ef; /* dumbbell: before (blue 250) */
+    --ramp-after:  #1c5cab; /* dumbbell: after  (blue 550) */
+    --good-text: #006300;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz-root {
+      color-scheme: dark;
+      --surface-1: #1a1a19;
+      --page: #0d0d0d;
+      --text-primary: #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted: #898781;
+      --grid: #2c2c2a;
+      --axis: #383835;
+      --border: rgba(255,255,255,0.10);
+      --series-1: #3987e5;
+      --series-2: #d95926;
+      --ramp-before: #6da7ec; /* blue 300 */
+      --ramp-after:  #184f95; /* blue 600 */
+      --good-text: #0ca30c;
+    }
+  }
+  :root[data-theme="dark"] .viz-root {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --page: #0d0d0d;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255,255,255,0.10);
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --ramp-before: #6da7ec;
+    --ramp-after:  #184f95;
+    --good-text: #0ca30c;
+  }
+
+  * { box-sizing: border-box; }
+  body.viz-root {
+    margin: 0; background: var(--page); color: var(--text-primary);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 1080px; margin: 0 auto; padding: 32px 24px 64px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--text-secondary); margin: 0 0 24px; }
+  .card {
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 10px; padding: 20px 20px 12px; margin: 0 0 20px;
+  }
+  .card h2 { font-size: 15px; margin: 0 0 2px; }
+  .card .hint { color: var(--text-muted); font-size: 12px; margin: 0 0 12px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin: 0 0 20px; }
+  .tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .tile .lbl { color: var(--text-secondary); font-size: 12px; }
+  .tile .val { font-size: 30px; font-weight: 600; }
+  .tile .delta { font-size: 12px; color: var(--good-text); }
+  .legend { display: flex; gap: 16px; align-items: center; font-size: 12px; color: var(--text-secondary); margin: 4px 0 8px; }
+  .legend .key { display: inline-flex; align-items: center; gap: 6px; }
+  .legend .sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  .legend .ln { width: 14px; height: 0; border-top: 3px solid; border-radius: 2px; display: inline-block; }
+  svg text { font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; fill: var(--text-muted); }
+  svg .panel-title { fill: var(--text-secondary); font-weight: 600; }
+  svg .val-label { fill: var(--text-secondary); font-variant-numeric: tabular-nums; }
+  svg .tick { font-variant-numeric: tabular-nums; }
+  #tooltip {
+    position: fixed; pointer-events: none; z-index: 10; display: none;
+    background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,.12);
+    color: var(--text-secondary); max-width: 260px;
+  }
+  #tooltip .v { color: var(--text-primary); font-weight: 600; }
+  #tooltip .row { display: flex; align-items: center; gap: 6px; }
+  #tooltip .k { width: 12px; border-top: 3px solid; border-radius: 2px; display: inline-block; }
+  details { margin: 0 0 20px; }
+  summary { cursor: pointer; color: var(--text-secondary); }
+  table { border-collapse: collapse; width: 100%; margin-top: 10px; background: var(--surface-1); font-size: 13px; }
+  th, td { text-align: right; padding: 6px 10px; border-bottom: 1px solid var(--grid); font-variant-numeric: tabular-nums; }
+  th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+  th { color: var(--text-secondary); font-weight: 600; }
+  .notes { color: var(--text-secondary); font-size: 13px; }
+  .notes li { margin-bottom: 6px; }
+  .toggle {
+    float: right; font-size: 12px; color: var(--text-secondary); background: none;
+    border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; cursor: pointer;
+  }
+  body.png-mode { background: #fcfcfb; }
+  body.png-mode main { max-width: 1040px; padding: 8px; }
+  body.png-mode .hide-in-png { display: none; }
+</style>
+</head>
+<body class="viz-root">
+<main>
+  <button class="toggle hide-in-png" id="themeToggle" type="button">Toggle dark</button>
+  <h1>Gripe payments: MongoDB Atlas vs RDS PostgreSQL</h1>
+  <p class="sub">k6 open-model load against the same Go API on identical idiomatic data models
+    (Mongo: embedded refunds + balance maps · PG: normalized + FKs). 100k payments seeded per backend.
+    Atlas M30 (3 nodes, w:majority) vs RDS Multi-AZ DB cluster (3× db.m6gd.large, semi-sync).
+    August 2026, eu-west-2. Latencies in ms.</p>
+
+  <div class="tiles hide-in-png" id="tiles"></div>
+
+  <div class="card" id="card-baseline">
+    <h2>Baseline — 92 req/s for 2 minutes</h2>
+    <p class="hint">Latency percentiles by scenario, after tuning. Both backends: 0 failed requests.</p>
+    <div class="legend" data-kind="series"></div>
+    <div id="chart-baseline"></div>
+  </div>
+
+  <div class="card" id="card-stress">
+    <h2>Stress — 368 req/s for 10 minutes (4×)</h2>
+    <p class="hint">Same scenarios at 4× arrival rate, after tuning. Both backends: 0 failed requests, all k6 thresholds passed.</p>
+    <div class="legend" data-kind="series"></div>
+    <div id="chart-stress"></div>
+  </div>
+
+  <div class="card" id="card-tuning">
+    <h2>What tuning did — MongoDB p95 at 368 req/s, before → after</h2>
+    <p class="hint">Covered sort index + onboarding cache + maxPoolSize 200. Log scale. Before-run latencies include k6 VU-exhaustion queuing on top of server time.</p>
+    <div class="legend" data-kind="dumbbell"></div>
+    <div id="chart-tuning"></div>
+  </div>
+
+  <details class="hide-in-png">
+    <summary>Table view — every run (also queryable in Atlas <code>gripe_perf.results</code>)</summary>
+    <table id="runs-table"></table>
+  </details>
+
+  <div class="card notes hide-in-png">
+    <h2>Read this before quoting numbers</h2>
+    <ul>
+      <li><strong>Network paths differ:</strong> RDS is reached in-VPC (~1&thinsp;ms TCP RTT); Atlas via its public endpoint (~2.5–3.5&thinsp;ms), both inside AWS eu-west-2. Roughly the entire remaining list-read gap (~1&thinsp;ms p50) is this hop, not the database. A private endpoint would close it.</li>
+      <li><strong>Durability parity:</strong> Mongo writes use <code>w:majority</code>; the RDS Multi-AZ cluster commits semi-synchronously to 1 of 2 standbys — comparable 2-of-3 semantics.</li>
+      <li><strong>Read parity:</strong> both PG DSNs point at the writer (no reader-endpoint offload), matching Mongo primary reads.</li>
+      <li><strong>Storage:</strong> PG on gp3 at the 3,000-IOPS baseline; neither run was IOPS-bound.</li>
+      <li><strong>The pre-tuning Mongo collapse was code, not hardware:</strong> 3 writes per create (payment + 2 onboarding upserts), a list sort not fully covered by an index, and a 100-connection driver pool. Fixed, the same M30 absorbs 4× with headroom.</li>
+      <li><strong>PG got the same fixes where applicable</strong> (onboarding cache), worth ~1.5&thinsp;ms on create p50 — the comparison stayed apples-to-apples.</li>
+      <li>Load: create 160/s, list 160/s, refund-flow 40/s (2 requests each), subscription churn 8/s at 4×. k6 constant-arrival-rate from a separate loadgen EC2 instance; nginx bypassed.</li>
+    </ul>
+  </div>
+</main>
+<div id="tooltip" role="status"></div>
+
+<script id="perf-data" type="application/json">
+{
+  "series": [
+    { "name": "MongoDB", "var": "--series-1" },
+    { "name": "PostgreSQL", "var": "--series-2" }
+  ],
+  "scenarios": ["create", "list", "refund flow"],
+  "percentiles": ["p50", "p95", "p99"],
+  "baseline": {
+    "MongoDB":    { "create": [12.7, 16.5, 30.7], "list": [2.7, 5.0, 11.5], "refund flow": [11.3, 18.0, 29.8] },
+    "PostgreSQL": { "create": [11.1, 19.6, 45.7], "list": [1.7, 3.7, 12.5], "refund flow": [10.2, 20.4, 42.9] }
+  },
+  "stress": {
+    "MongoDB":    { "create": [13.2, 25.9, 80.2], "list": [2.7, 8.1, 33.9], "refund flow": [12.3, 22.6, 68.6] },
+    "PostgreSQL": { "create": [11.6, 69.4, 297.7], "list": [1.8, 21.6, 102.5], "refund flow": [10.8, 63.2, 285.7] }
+  },
+  "tuning_p95": {
+    "create": [1044.7, 25.9], "list": [759.6, 8.1], "refund flow": [967.8, 22.6]
+  },
+  "runs": [
+    { "run": "baseline pre-tune",  "backend": "PostgreSQL", "create": [12.9, 21.8, 54.2],  "list": [1.9, 3.2, 11.1],   "refund": [12.0, 19.2, 42.0] },
+    { "run": "baseline pre-tune",  "backend": "MongoDB",    "create": [13.9, 21.1, 33.9],  "list": [6.1, 8.6, 13.6],   "refund": [12.4, 19.0, 30.6] },
+    { "run": "stress pre-tune",    "backend": "PostgreSQL", "create": [13.3, 72.3, 294.6], "list": [1.9, 22.0, 106.5], "refund": [12.2, 68.2, 284.4] },
+    { "run": "stress pre-tune",    "backend": "MongoDB",    "create": [199.1, 1044.7, 2183.7], "list": [198.4, 759.6, 945.9], "refund": [156.4, 967.8, 1956.5] },
+    { "run": "baseline tuned",     "backend": "PostgreSQL", "create": [11.1, 19.6, 45.7],  "list": [1.7, 3.7, 12.5],   "refund": [10.2, 20.4, 42.9] },
+    { "run": "baseline tuned",     "backend": "MongoDB",    "create": [12.7, 16.5, 30.7],  "list": [2.7, 5.0, 11.5],   "refund": [11.3, 18.0, 29.8] },
+    { "run": "stress tuned",       "backend": "PostgreSQL", "create": [11.6, 69.4, 297.7], "list": [1.8, 21.6, 102.5], "refund": [10.8, 63.2, 285.7] },
+    { "run": "stress tuned",       "backend": "MongoDB",    "create": [13.2, 25.9, 80.2],  "list": [2.7, 8.1, 33.9],   "refund": [12.3, 22.6, 68.6] }
+  ]
+}
+</script>
+
+<script>
+(function () {
+  "use strict";
+  const DATA = JSON.parse(document.getElementById("perf-data").textContent);
+  const SVGNS = "http://www.w3.org/2000/svg";
+  const tooltip = document.getElementById("tooltip");
+
+  function el(name, attrs, parent) {
+    const n = document.createElementNS(SVGNS, name);
+    for (const k in attrs) n.setAttribute(k, attrs[k]);
+    if (parent) parent.appendChild(n);
+    return n;
+  }
+  function txt(node, s) { node.appendChild(document.createTextNode(s)); return node; }
+  function fmt(v) { return v >= 100 ? Math.round(v).toLocaleString() : v.toLocaleString(); }
+
+  function showTip(evt, rows) {
+    tooltip.replaceChildren();
+    rows.forEach(r => {
+      const div = document.createElement("div");
+      div.className = "row";
+      if (r.color) {
+        const k = document.createElement("span");
+        k.className = "k";
+        k.style.borderTopColor = r.color;
+        div.appendChild(k);
+      }
+      const v = document.createElement("span");
+      v.className = "v";
+      v.textContent = r.value;
+      div.appendChild(v);
+      const l = document.createElement("span");
+      l.textContent = r.label;
+      div.appendChild(l);
+      tooltip.appendChild(div);
+    });
+    tooltip.style.display = "block";
+    const pad = 14;
+    let x = evt.clientX + pad, y = evt.clientY + pad;
+    const r = tooltip.getBoundingClientRect();
+    if (x + r.width > innerWidth - 8) x = evt.clientX - r.width - pad;
+    if (y + r.height > innerHeight - 8) y = evt.clientY - r.height - pad;
+    tooltip.style.left = x + "px";
+    tooltip.style.top = y + "px";
+  }
+  function hideTip() { tooltip.style.display = "none"; }
+
+  function niceMax(v) {
+    const mag = Math.pow(10, Math.floor(Math.log10(v)));
+    for (const m of [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) if (m * mag >= v) return m * mag;
+    return 10 * mag;
+  }
+
+  // Small multiples of grouped bars: one panel per percentile, scenarios on x,
+  // one bar per backend. Own y-scale per panel (spans differ 10x).
+  function groupedPanels(containerId, dataset, labelPanel) {
+    const W = 1040, PANEL_W = 330, GAP = 25, PH = 240, TOP = 28, BOT = 34, LEFT = 44, RIGHT = 8;
+    const H = TOP + PH + BOT;
+    const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, width: "100%", role: "img" });
+    DATA.percentiles.forEach((pct, pi) => {
+      const ox = pi * (PANEL_W + GAP);
+      const plotW = PANEL_W - LEFT - RIGHT;
+      const g = el("g", { transform: `translate(${ox},0)` }, svg);
+      txt(el("text", { x: LEFT, y: 14, class: "panel-title" }, g), pct);
+      let max = 0;
+      DATA.series.forEach(s => DATA.scenarios.forEach(sc => { max = Math.max(max, dataset[s.name][sc][pi]); }));
+      max = niceMax(max);
+      const y = v => TOP + PH - (v / max) * PH;
+      for (let i = 0; i <= 4; i++) {
+        const v = (max / 4) * i;
+        el("line", { x1: LEFT, x2: LEFT + plotW, y1: y(v), y2: y(v), stroke: "var(--grid)", "stroke-width": 1 }, g);
+        txt(el("text", { x: LEFT - 6, y: y(v) + 4, "text-anchor": "end", class: "tick" }, g), fmt(v));
+      }
+      el("line", { x1: LEFT, x2: LEFT + plotW, y1: TOP + PH, y2: TOP + PH, stroke: "var(--axis)", "stroke-width": 1 }, g);
+      const band = plotW / DATA.scenarios.length;
+      const BW = 24, SGAP = 2; // bar width cap + surface gap
+      DATA.scenarios.forEach((sc, si) => {
+        const cx = LEFT + band * si + band / 2;
+        txt(el("text", { x: cx, y: TOP + PH + 18, "text-anchor": "middle" }, g), sc);
+        DATA.series.forEach((s, bi) => {
+          const v = dataset[s.name][sc][pi];
+          const x = cx - BW - SGAP / 2 + bi * (BW + SGAP);
+          const h = Math.max(1, (v / max) * PH);
+          const yTop = TOP + PH - h;
+          const r = Math.min(4, h / 2);
+          // rounded top, square baseline
+          const d = `M${x},${TOP + PH} V${yTop + r} Q${x},${yTop} ${x + r},${yTop} H${x + BW - r} Q${x + BW},${yTop} ${x + BW},${yTop + r} V${TOP + PH} Z`;
+          const bar = el("path", { d, fill: `var(${s.var})` }, g);
+          // headline direct label: the create group only (the story), value on the cap
+          if (labelPanel && sc === "create") {
+            txt(el("text", { x: x + BW / 2, y: yTop - 4, "text-anchor": "middle", class: "val-label" }, g), fmt(v));
+          }
+          // hit target wider than the mark
+          const hit = el("rect", {
+            x: x - 4, y: TOP, width: BW + 8, height: PH, fill: "transparent", tabindex: 0
+          }, g);
+          const tipRows = () => [
+            { value: fmt(v) + " ms", label: `${s.name} · ${sc} ${pct}`, color: getComputedStyle(document.body).getPropertyValue(s.var) }
+          ];
+          hit.addEventListener("pointermove", e => { bar.setAttribute("opacity", "0.85"); showTip(e, tipRows()); });
+          hit.addEventListener("pointerleave", () => { bar.removeAttribute("opacity"); hideTip(); });
+          hit.addEventListener("focus", () => {
+            const rct = hit.getBoundingClientRect();
+            showTip({ clientX: rct.left + rct.width / 2, clientY: rct.top }, tipRows());
+          });
+          hit.addEventListener("blur", hideTip);
+        });
+      });
+    });
+    document.getElementById(containerId).appendChild(svg);
+  }
+
+  // Dumbbell, log x: before -> after per scenario.
+  function dumbbell(containerId) {
+    const W = 1040, LEFT = 92, RIGHT = 60, ROW = 52, TOP = 30, BOT = 34;
+    const scen = DATA.scenarios;
+    const H = TOP + scen.length * ROW + BOT;
+    const plotW = W - LEFT - RIGHT;
+    const min = 1, max = 3000;
+    const x = v => LEFT + (Math.log10(v) - Math.log10(min)) / (Math.log10(max) - Math.log10(min)) * plotW;
+    const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, width: "100%", role: "img" });
+    [1, 10, 100, 1000].forEach(v => {
+      el("line", { x1: x(v), x2: x(v), y1: TOP - 8, y2: TOP + scen.length * ROW, stroke: "var(--grid)", "stroke-width": 1 }, svg);
+      txt(el("text", { x: x(v), y: TOP + scen.length * ROW + 18, "text-anchor": "middle", class: "tick" }, svg), v.toLocaleString() + " ms");
+    });
+    scen.forEach((sc, i) => {
+      const cy = TOP + i * ROW + ROW / 2;
+      const [before, after] = DATA.tuning_p95[sc];
+      txt(el("text", { x: LEFT - 12, y: cy + 4, "text-anchor": "end" }, svg), sc);
+      el("line", { x1: x(after), x2: x(before), y1: cy, y2: cy, stroke: "var(--ramp-before)", "stroke-width": 2 }, svg);
+      const mk = (v, color, anchor, dx) => {
+        el("circle", { cx: x(v), cy, r: 7, fill: "var(--surface-1)" }, svg); // surface ring
+        const dot = el("circle", { cx: x(v), cy, r: 5, fill: color }, svg);
+        txt(el("text", { x: x(v) + dx, y: cy + 4, "text-anchor": anchor, class: "val-label" }, svg), fmt(v));
+        const hit = el("circle", { cx: x(v), cy, r: 14, fill: "transparent", tabindex: 0 }, svg);
+        const rows = () => [{ value: fmt(v) + " ms", label: `${sc} p95 ${color === "var(--ramp-before)" ? "before" : "after"} tuning`, color: getComputedStyle(document.body).getPropertyValue(color.slice(4, -1)) }];
+        hit.addEventListener("pointermove", e => { dot.setAttribute("r", 6); showTip(e, rows()); });
+        hit.addEventListener("pointerleave", () => { dot.setAttribute("r", 5); hideTip(); });
+        hit.addEventListener("focus", () => { const r = hit.getBoundingClientRect(); showTip({ clientX: r.left + 14, clientY: r.top }, rows()); });
+        hit.addEventListener("blur", hideTip);
+      };
+      mk(before, "var(--ramp-before)", "start", 12);
+      mk(after, "var(--ramp-after)", "end", -12);
+    });
+    document.getElementById(containerId).appendChild(svg);
+  }
+
+  function legends() {
+    document.querySelectorAll(".legend[data-kind=series]").forEach(lg => {
+      DATA.series.forEach(s => {
+        const key = document.createElement("span");
+        key.className = "key";
+        const sw = document.createElement("span");
+        sw.className = "sw";
+        sw.style.background = `var(${s.var})`;
+        key.appendChild(sw);
+        key.appendChild(document.createTextNode(s.name));
+        lg.appendChild(key);
+      });
+    });
+    document.querySelectorAll(".legend[data-kind=dumbbell]").forEach(lg => {
+      [["--ramp-before", "before tuning"], ["--ramp-after", "after tuning"]].forEach(([v, name]) => {
+        const key = document.createElement("span");
+        key.className = "key";
+        const sw = document.createElement("span");
+        sw.className = "sw";
+        sw.style.borderRadius = "50%";
+        sw.style.background = `var(${v})`;
+        key.appendChild(sw);
+        key.appendChild(document.createTextNode(name));
+        lg.appendChild(key);
+      });
+    });
+  }
+
+  function tiles() {
+    const wrap = document.getElementById("tiles");
+    const items = [
+      { lbl: "failed requests at 4× load", val: "0", delta: "both backends, 10 min each" },
+      { lbl: "sustained arrival rate", val: "368/s", delta: "open model — no backpressure" },
+      { lbl: "MongoDB create p95 at 4×", val: "26 ms", delta: "was 1,045 ms before tuning" },
+      { lbl: "PostgreSQL create p95 at 4×", val: "69 ms", delta: "in-VPC RDS cluster" }
+    ];
+    items.forEach(it => {
+      const t = document.createElement("div");
+      t.className = "tile";
+      const l = document.createElement("div"); l.className = "lbl"; l.textContent = it.lbl;
+      const v = document.createElement("div"); v.className = "val"; v.textContent = it.val;
+      const d = document.createElement("div"); d.className = "delta"; d.textContent = it.delta;
+      t.append(l, v, d);
+      wrap.appendChild(t);
+    });
+  }
+
+  function table() {
+    const t = document.getElementById("runs-table");
+    const head = document.createElement("tr");
+    ["run", "backend", "create p50", "create p95", "create p99", "list p50", "list p95", "list p99", "refund p50", "refund p95", "refund p99"]
+      .forEach(h => { const th = document.createElement("th"); th.textContent = h; head.appendChild(th); });
+    t.appendChild(head);
+    DATA.runs.forEach(r => {
+      const tr = document.createElement("tr");
+      [r.run, r.backend, ...r.create, ...r.list, ...r.refund].forEach(c => {
+        const td = document.createElement("td");
+        td.textContent = typeof c === "number" ? fmt(c) : c;
+        tr.appendChild(td);
+      });
+      t.appendChild(tr);
+    });
+  }
+
+  // theme toggle: viewer's choice beats the OS setting
+  document.getElementById("themeToggle").addEventListener("click", () => {
+    const root = document.documentElement;
+    const dark = root.dataset.theme === "dark" ||
+      (!root.dataset.theme && matchMedia("(prefers-color-scheme: dark)").matches);
+    root.dataset.theme = dark ? "light" : "dark";
+  });
+
+  // PNG export mode: ?png=baseline|stress|tuning renders one card, light theme
+  const png = new URLSearchParams(location.search).get("png");
+  if (png) {
+    document.documentElement.dataset.theme = "light";
+    document.body.classList.add("png-mode");
+    ["baseline", "stress", "tuning"].forEach(id => {
+      if (id !== png) document.getElementById("card-" + id).style.display = "none";
+    });
+  }
+
+  legends();
+  tiles();
+  table();
+  groupedPanels("chart-baseline", DATA.baseline, true);
+  groupedPanels("chart-stress", DATA.stress, true);
+  dumbbell("chart-tuning");
+})();
+</script>
+</body>
+</html>

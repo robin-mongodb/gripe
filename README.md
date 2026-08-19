@@ -58,14 +58,23 @@ A `Store` feature is done only when the shared contract suite is green on Mongo 
 
 ## Deploy
 
-Terraform in `deploy/terraform/`: one EC2 (docker-compose via user-data), RDS PostgreSQL,
-SQS queues, and an optional k6 load-generator box (`enable_loadgen = true`). Atlas is
-user-owned; its URI goes in `terraform.tfvars` → `app_env`. See `deploy/terraform/README.md`.
+Terraform in `deploy/terraform/`: one EC2 (docker-compose via user-data), an RDS PostgreSQL
+**Multi-AZ DB cluster** (3× db.m6gd.large, semi-sync — the Atlas M30 equivalent), SQS queues,
+and an optional k6 load-generator box (`enable_loadgen = true`). Atlas is user-owned; the app
+authenticates via **MONGODB-AWS (IAM instance role)** — no DB password in config. See
+`deploy/terraform/README.md`.
 
-## Perf comparison
+## Perf comparison (done)
 
-`perf/` holds the k6 scenarios (create / list / refund flow / subscription churn) and the
-run book for capturing p50/p95/p99 against each backend. Results feed the comparison report.
+`perf/` holds the k6 scenarios (create / list / refund flow / subscription churn);
+`perf/run-perf.sh` runs them and persists every summary to Atlas `gripe_perf.results`.
+Headline (idiomatic schemas, tuned): both backends sustained **368 req/s with zero errors**;
+Mongo M30 won the tail latencies (create p95 **26 ms** vs **69 ms**), PG kept the read p50 edge
+(in-VPC network path). Full story with charts and caveats:
+
+- `docs/perf-report.html` — the comparison report (PNG exports in `docs/perf/`)
+- `docs/data-models.html` — PG ERD vs Mongo collections, side by side
+- `docs/claude-dx.md` — was one DB easier to build with Claude?
 
 ## Demo
 

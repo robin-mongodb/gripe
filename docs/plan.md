@@ -1,5 +1,12 @@
 # Gripe — Build Approach
 
+> **Status (2026-08-19): shipped.** All 76 tasks in `tasks.html` are done; the 9-step
+> verification below passes on both backends. Deferred decisions resolved: perf tool = **k6**
+> (#10), seed volume = **50 merchants × 2,000 payments, 10 subs each** (#11). Deliverables:
+> `docs/perf-report.html` (+ `docs/perf/` PNGs), `docs/data-models.html`, `docs/claude-dx.md`.
+> Perf headline: 368 req/s, zero errors on both; tuned Mongo M30 create p95 26 ms vs
+> RDS-cluster 69 ms. Parked scope (fraud LLM, AI chat, vector/fuzzy search, live feed) stays parked.
+
 ## Context
 
 Two-week challenge to build the same payments platform twice — once on MongoDB, once on PostgreSQL (RDS PostgreSQL in prod, vanilla PG in tests) — then load-test both. Goal: a live demo that processes payments end-to-end on either backend, plus a perf report that stands up in a customer conversation.

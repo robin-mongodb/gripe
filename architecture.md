@@ -21,8 +21,8 @@ Deploy target for workers may move to Fargate later — `docker-compose` for v1,
 
 ## Managed services
 
-- **MongoDB Atlas** — the Mongo `Store` impl talks to Atlas over the internet from EC2. `mongodb-atlas-local` used only in testcontainers (contract tests).
-- **RDS PostgreSQL** — the PG `Store` impl targets a plain RDS PostgreSQL instance (single-AZ, `db.t4g.micro`). Not Aurora. Vanilla PG used only in testcontainers. Provisioned by `deploy/terraform/rds.tf`.
+- **MongoDB Atlas** — M30, 3 nodes, eu-west-2, `w:majority`. Auth is **MONGODB-AWS (IAM)**: the EC2 instance role is an Atlas database user, so no password lives in `.env`. Reached via the public endpoint (~2.5–3.5 ms TCP RTT from the app box; in-region AWS backbone). `mongodb-atlas-local` used only in testcontainers (contract tests).
+- **RDS PostgreSQL** — a **Multi-AZ DB cluster**: 3× `db.m6gd.large`, gp3 100 GiB (3,000 IOPS baseline), semi-synchronous commit (≈ `w:majority` — 2-of-3 semantics on both backends). Not Aurora. Both DSNs point at the **writer** endpoint for read parity with Mongo primary reads. In-VPC (~1 ms RTT). Vanilla PG only in testcontainers. Provisioned by `deploy/terraform/rds.tf`.
 - **Amazon SQS** — one standard queue per event type. Currently: `payment.created`. Fanned to fraud-worker + fee-worker via two subscriptions (or SNS → 2 SQS; TBD when we wire it).
 
 Neither backend runs on the EC2 host — DB load hits AWS/Atlas over the network, which is the load-comparison story.
@@ -33,7 +33,16 @@ A second EC2 (`gripe-loadgen`, `t3.medium`, `deploy/terraform/loadgen.tf`, off b
 `enable_loadgen`) runs k6 against the app box's **api port 8080 directly** — bypassing nginx,
 whose 100 r/s rate limit would dominate the measurement. Separate machine so the load generator
 never steals CPU from the system under test; same subnet so the client→api hop is constant and
-the only variable is the database. Scenarios live in `perf/scenarios.js`.
+the only variable is the database. Scenarios live in `perf/scenarios.js`; run them via
+`perf/run-perf.sh <postgres|mongo> [RATE] [DURATION]`, which persists every k6 summary to Atlas
+`gripe_perf.results` (mongosh + the shared IAM role) so results survive the EC2 cleanup reaper.
+
+## Perf outcome (2026-08-19)
+
+Both backends held 368 req/s for 10 min with zero errors; after task-42 tuning (covered list
+index, onboarding cache, `maxPoolSize` 200) Mongo won the tails (create p95 26 ms vs 69 ms),
+PG kept the read p50 edge (network path). Full report: `docs/perf-report.html` (+ PNGs in
+`docs/perf/`); data-model comparison: `docs/data-models.html`; DX note: `docs/claude-dx.md`.
 
 ## Data flow
 
@@ -64,15 +73,16 @@ The two workers hit each DB with reads + updates, which mixes the workload beyon
 
 ## What lives where in the repo
 
-| Concern                       | Path (planned)                                                     |
+| Concern                       | Path                                                               |
 | ----------------------------- | ------------------------------------------------------------------ |
 | Store interface + DTOs        | `internal/store/`, `internal/domain/`                              |
 | Mongo impl                    | `store/mongo/`                                                     |
 | Postgres impl + migrations    | `store/postgres/`, `store/postgres/migrations/`                    |
-| Contract tests + testcontainers | `store/contract_test.go`, `store/testsupport/`                   |
+| Contract tests + testcontainers | `store/contract/`, `store/*/contract_test.go`                    |
 | API handlers                  | `cmd/api/`, `internal/api/`                                        |
-| Workers                       | `cmd/fraud-worker/`, `cmd/fee-worker/`, `internal/workers/`        |
+| Workers                       | `cmd/{fraud-worker,fee-worker,cycler}/`, `internal/workers/`, `internal/cycler/` |
 | Frontend                      | `web/app/(admin\|merchant\|checkout)/`                             |
-| Infra                         | `docker-compose.yml`, `deploy/ec2/`, `deploy/sqs/`                 |
+| Perf harness + report         | `perf/`, `docs/perf-report.html`, `docs/perf/`                     |
+| Infra                         | `docker-compose.yml`, `deploy/terraform/`, `deploy/nginx/`         |
 
 Update `paths` on task rows in `tasks.html` as code lands.

@@ -84,13 +84,13 @@
   <!-- RDS PG -->
   <rect x="850" y="120" width="220" height="90" class="box" fill="var(--aws)"/>
   <text x="960" y="150" text-anchor="middle" class="title">RDS PostgreSQL</text>
-  <text x="960" y="170" text-anchor="middle" class="small">managed · single instance · SSL</text>
-  <text x="960" y="188" text-anchor="middle" class="small">bigint minor units · pgvector (parked)</text>
+  <text x="960" y="170" text-anchor="middle" class="small">Multi-AZ cluster · 3 nodes · semi-sync</text>
+  <text x="960" y="188" text-anchor="middle" class="small">writer endpoint · bigint minor units</text>
 
   <!-- Atlas -->
   <rect x="850" y="240" width="220" height="90" class="box" fill="var(--atlas)"/>
   <text x="960" y="270" text-anchor="middle" class="title">MongoDB Atlas</text>
-  <text x="960" y="290" text-anchor="middle" class="small">managed · TLS</text>
+  <text x="960" y="290" text-anchor="middle" class="small">M30 · 3 nodes · w:majority · IAM auth</text>
   <text x="960" y="308" text-anchor="middle" class="small">int64 minor units · Vector Search (parked)</text>
 
   <!-- AWS group -->
@@ -101,7 +101,7 @@
   <rect x="860" y="430" width="250" height="72" class="grp" style="fill:transparent"/>
   <text x="985" y="456" text-anchor="middle" class="title">loadgen EC2 (perf only)</text>
   <text x="985" y="473" text-anchor="middle" class="small">k6 → api :8080 (bypasses nginx)</text>
-  <text x="985" y="488" text-anchor="middle" class="small">enable_loadgen=true in TF</text>
+  <text x="985" y="488" text-anchor="middle" class="small">results → Atlas gripe_perf.results</text>
   <path class="edge edge-dashed" d="M858,450 C660,440 580,280 544,225"/>
 
   <!-- Edges -->
@@ -163,6 +163,7 @@
     <li>Workers are separate processes so the DB sees mixed load (read + update per payment), not just inserts.</li>
     <li>SQS is backend-agnostic — both DBs get the same event pattern. Change Streams / <code>LISTEN/NOTIFY</code> are parked for the live-event-feed UI, not for worker triggering.</li>
     <li>EC2 + compose over ECS/Fargate for v1: one host, one deploy, cheapest. Lift-and-shift to Fargate later without code changes.</li>
+    <li><strong>Perf outcome (2026-08-19):</strong> both backends held 368 req/s with zero errors; after tuning, Mongo won the tails (create p95 26 ms vs 69 ms), PG the read p50 (in-VPC path). See <code>docs/perf-report.html</code>, <code>docs/data-models.html</code>, <code>docs/claude-dx.md</code>.</li>
   </ul>
   <h2>What's parked</h2>
   <ul>

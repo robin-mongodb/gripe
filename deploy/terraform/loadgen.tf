@@ -70,7 +70,8 @@ resource "aws_instance" "loadgen" {
     REPO
     dnf install -y mongodb-mongosh
     sudo -u ec2-user git clone "${var.repo_url}" /home/ec2-user/gripe
-    echo "MONGO_URI=${lookup(var.app_env, "MONGO_URI", "")}" > /home/ec2-user/gripe/perf/.env
+    # Single-quoted: the URI contains '&', which unquoted would background the assignment when sourced.
+    echo "MONGO_URI='${lookup(var.app_env, "MONGO_URI", "")}'" > /home/ec2-user/gripe/perf/.env
     chown ec2-user:ec2-user /home/ec2-user/gripe/perf/.env
     echo "loadgen ready: cd gripe/perf && ./run-perf.sh <postgres|mongo> [RATE] [DURATION] (BASE=http://${aws_instance.app.private_ip}:8080/v1)" \
       > /etc/motd

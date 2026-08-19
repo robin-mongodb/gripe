@@ -17,3 +17,4 @@ deploy/terraform/terraform.tfvars
 deploy/terraform/*.auto.tfvars
 crash.log
 crash.*.log
+web/tsconfig.tsbuildinfo

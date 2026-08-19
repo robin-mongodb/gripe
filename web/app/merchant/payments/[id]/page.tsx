@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
-import { api, fmtMoney, toMinor, type Payment, type Refund } from "../../../../lib/api";
+import { api, fmtMoney, newIdempotencyKey, toMinor, type Payment, type Refund } from "../../../../lib/api";
 
 // Payment detail + refund action (task 23). Refundable states mirror the store's
 // rules: captured/settled/refunded (partial) can be refunded up to the remainder.
@@ -40,7 +40,7 @@ export default function PaymentDetailPage() {
         role: "merchant",
         actorId: merchantId,
         method: "POST",
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey: newIdempotencyKey(),
         body: { amount_minor: toMinor(amount) },
       });
       setDone(r);

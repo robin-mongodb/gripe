@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { api, toMinor, type Payment } from "../../lib/api";
+import { api, newIdempotencyKey, toMinor, type Payment } from "../../lib/api";
 
 const METHODS = [
   { value: "card", label: "Card" },
@@ -31,7 +31,7 @@ export default function CheckoutPage() {
         role: "customer",
         actorId: customerId,
         method: "POST",
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey: newIdempotencyKey(),
         body: {
           merchant_id: merchantId,
           customer_id: customerId,
